@@ -13,11 +13,17 @@ interface Props {
 export const EmergencyEject: React.FC<Props> = ({
     slots, safetyLocked, onToggleLock, onEmergencyDispense, mqttSendDispense,
 }) => {
-    const [selectedSlot, setSelectedSlot] = useState(0);
     const [slideProgress, setSlideProgress] = useState(0);
     const [isSliding, setIsSliding] = useState(false);
     const [ejected, setEjected] = useState(false);
     const trackRef = useRef<HTMLDivElement>(null);
+
+    // DEDUCE NEXT SLOT
+    const now = new Date();
+    const currentHHMM = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+    const validSlots = slots.filter(s => s.enabled && s.pillsRemaining > 0);
+    const sorted = validSlots.sort((a, b) => a.dosageTime.localeCompare(b.dosageTime));
+    const nextSlot = sorted.length > 0 ? (sorted.find(s => s.dosageTime >= currentHHMM) || sorted[0]) : null;
 
     const resetSlide = useCallback(() => {
         setSlideProgress(0);
@@ -46,11 +52,11 @@ export const EmergencyEject: React.FC<Props> = ({
         const progress = Math.max(0, Math.min(1, x / maxTravel));
         setSlideProgress(progress);
 
-        if (progress >= 0.95) {
+        if (progress >= 0.95 && nextSlot) {
             setIsSliding(false);
             setEjected(true);
-            onEmergencyDispense(selectedSlot);
-            mqttSendDispense(selectedSlot, 'emergency');
+            onEmergencyDispense(nextSlot.slotIndex);
+            mqttSendDispense(nextSlot.slotIndex, 'emergency');
             setTimeout(() => setSlideProgress(0), 500);
         }
     };
@@ -90,46 +96,41 @@ export const EmergencyEject: React.FC<Props> = ({
             </div>
 
             {/* Description */}
-            <p className="text-xs text-surface-400 mb-4 leading-relaxed">
-                Trigger an immediate servo dispense, bypassing all scheduled timers.
-                Unlock the safety first, select the target slot, then slide to confirm.
+            <p className="text-xs text-surface-400 mb-6 leading-relaxed">
+                Trigger an immediate servo dispense, bypassing all scheduled timers. 
+                Unlock the safety first, then slide to confirm. The system will auto-eject the most relevant dose.
             </p>
 
-            {/* Slot Selector */}
-            <div className="mb-4">
-                <label className="text-label mb-2.5 block">Target Slot</label>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {slots.map((slot, i) => (
-                        <button
-                            key={slot.id}
-                            onClick={() => setSelectedSlot(i)}
-                            className={`py-2.5 px-2 rounded-xl text-xs font-bold transition-all duration-200 text-center ${selectedSlot === i
-                                ? 'bg-red-500/15 text-red-300 border border-red-500/30 shadow-[0_0_10px_rgba(239,68,68,0.1)]'
-                                : 'bg-navy-800/50 text-surface-400 border border-navy-600/25 hover:border-navy-500/40'
-                                }`}
-                        >
-                            <span className="block text-[10px] text-surface-500 mb-0.5">SLOT {i + 1}</span>
-                            {slot.name}
-                        </button>
-                    ))}
-                </div>
+            {/* Next Due Indicator */}
+            <div className="mb-6">
+                <label className="text-label mb-2.5 block">Next Scheduled Dose to Eject</label>
+                {nextSlot ? (
+                    <div className="py-3 px-4 rounded-xl text-sm font-bold bg-navy-800/80 border border-teal-500/30 flex items-center justify-between">
+                        <span className="text-white">{nextSlot.name}</span>
+                        <span className="text-teal-400 font-mono">{nextSlot.dosageTime}</span>
+                    </div>
+                ) : (
+                    <div className="py-3 px-4 rounded-xl text-sm font-bold bg-navy-800/50 border border-red-500/20 text-surface-500">
+                        No pills loaded / enabled.
+                    </div>
+                )}
             </div>
 
             {/* Safety Warning */}
-            {!safetyLocked && !ejected && (
+            {!safetyLocked && !ejected && nextSlot && (
                 <div className="mb-4 px-4 py-2.5 bg-red-500/5 border border-red-500/15 rounded-xl flex items-center gap-2.5 animate-slide-up">
                     <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
                     <p className="text-xs text-red-300/80">
-                        Safety disengaged — slide below to immediately dispense from <strong>Slot {selectedSlot + 1}</strong>.
+                        Safety disengaged — slide below to immediately dispense <strong>{nextSlot.name}</strong>.
                     </p>
                 </div>
             )}
 
             {/* Ejected Confirmation */}
-            {ejected && (
+            {ejected && nextSlot && (
                 <div className="mb-4 px-4 py-3 bg-teal-500/10 border border-teal-500/20 rounded-xl text-center animate-slide-up">
                     <p className="text-teal-300 font-bold text-sm">
-                        ✅ Emergency dispense sent — Slot {selectedSlot + 1}
+                        ✅ Dispensing {nextSlot.name} — Inventory Updated
                     </p>
                 </div>
             )}
@@ -137,7 +138,7 @@ export const EmergencyEject: React.FC<Props> = ({
             {/* Slide to Confirm */}
             <div
                 ref={trackRef}
-                className={`slide-track ${safetyLocked ? 'opacity-30 pointer-events-none' : ''}`}
+                className={`slide-track ${ (safetyLocked || !nextSlot) ? 'opacity-30 pointer-events-none' : ''}`}
                 onPointerUp={handlePointerUp}
             >
                 <div className="slide-track-text">

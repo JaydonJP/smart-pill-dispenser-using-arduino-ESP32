@@ -1,209 +1,363 @@
+/*
+  Smart Pill Dispenser — ESP32-S3 Firmware v3.0
+  Architecture: Dashboard Mastermind
+  Hardware: 8-compartment wheel (1 dispense slot, 7 medicine slots)
+  
+  Slot Map:
+    Position 0 = Dispense opening (empty, always aligned at start)
+    Position 1-7 = Medicine slots (each 45° apart)
+  
+  Commands received via MQTT (dispenser/command):
+    "start_cycle"   — Begin operation, show clock
+    "dispense:N"    — Rotate to slot N and dispense
+    "lcd:L1|L2"     — Display custom text on LCD
+
+  Messages published via MQTT (dispenser/status):
+    "online"        — Heartbeat every 5s
+    "offline"       — LWT on disconnect
+    "taken:N"       — Patient pressed button for slot N
+    "missed:N"      — No button press after 5 minutes for slot N
+    "ack_wait:N"    — Waiting for button confirmation for slot N
+*/
+
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <LiquidCrystal.h>
 #include <ESP32Servo.h>
 #include "time.h"
 
-// --- WiFi & MQTT Configuration ---
-const char* ssid = "Jaydon";          // Your Wi-Fi network name
-const char* password = "jaydonjp";  // Your Wi-Fi password
-const char* mqtt_server = "10.91.140.177";   // Your laptop IP
+// ─── WiFi & MQTT ─────────────────────────────────────────────────────
+const char* ssid          = "Jaydon";
+const char* password      = "jaydonjp";
+const char* mqtt_server   = "10.109.92.177";
 
-WiFiClient espClient;
-PubSubClient client(espClient);
-
-// --- Hardware Pins ---
+// ─── Hardware Pins ───────────────────────────────────────────────────
 LiquidCrystal lcd(4, 5, 6, 7, 15, 16);
 Servo servo;
-int servoPin = 17;
-int buttonPin = 18;
-int ledPin = 19;
-int buzzerPin = 21;
+const int servoPin   = 17;
+const int buttonPin  = 18;
+const int ledPin     = 19;
+const int buzzerPin  = 21;
 
-// --- Dispenser State ---
-int angle = 0;
-int angleIncrement = 45;
-int slotCount = 0;
-unsigned long lastMove = 0;
-bool refillMode = false;
-unsigned long rotationInterval = 20000; // 20 seconds for testing
+// ─── Slot / Servo Config ─────────────────────────────────────────────
+// 8 compartments = 45° per step
+// Slot 0 is the dispense opening. Slots 1-7 hold medicines.
+// To dispense slot N, we rotate N * 45° from home position.
+const int TOTAL_SLOTS     = 8;
+const int DEG_PER_SLOT    = 45;
+int currentPosition       = 0; // Which physical slot is at dispense opening (0 = empty)
 
-void alertUser() {
-  lcd.clear();
-  lcd.setCursor(0,0);
-  lcd.print("Take Medicine!");
+// ─── Acknowledgment State ─────────────────────────────────────────────
+bool waitingForAck        = false;
+int  ackSlot              = -1;
+unsigned long dispenseTime = 0;
+const unsigned long MISSED_TIMEOUT = 300000UL; // 5 minutes
+const unsigned long ALERT_INTERVAL = 10000UL;  // 10 seconds
+unsigned long lastAlertTime = 0;
 
-  for(int i=0; i<4; i++) {
-    digitalWrite(ledPin, HIGH);
+// ─── System State ─────────────────────────────────────────────────────
+bool cycleStarted         = false;
+bool showingCustomMessage = false;
+bool startDemoTriggered   = false;
+unsigned long customMsgTime = 0;
+String nextDoseStr = "--:--";
+
+WiFiClient   espClient;
+PubSubClient mqttClient(espClient);
+
+// ─── Helpers ──────────────────────────────────────────────────────────
+void buzz(int times, int ms = 100) {
+  for (int i = 0; i < times; i++) {
     digitalWrite(buzzerPin, HIGH);
-    delay(200);
-    digitalWrite(ledPin, LOW);
+    digitalWrite(ledPin, HIGH);
+    delay(ms);
     digitalWrite(buzzerPin, LOW);
-    delay(200);
+    digitalWrite(ledPin, LOW);
+    delay(ms);
   }
 }
 
-void moveServo(int targetAngle) {
-  while(angle < targetAngle) {
-    angle++;
-    servo.write(angle);
-    delay(20);
+void moveServoToSlot(int targetSlot) {
+  int targetAngle = targetSlot * DEG_PER_SLOT;
+  int currentAngle = currentPosition * DEG_PER_SLOT;
+  
+  // MG90S is mechanically limited to 180 degrees. 
+  // Sending values > 200 causes the servo library to send microsecond pulses, causing violent jitter.
+  if (targetAngle > 180) {
+    Serial.println("Warning: Target angle exceeds MG90S 180-degree physical limit! Stopping at 180.");
+    targetAngle = 180;
   }
-  while(angle > targetAngle) {
-    angle--;
-    servo.write(angle);
-    delay(20);
+  if (currentAngle > 180) currentAngle = 180;
+
+  // Since a standard servo cannot spin infinitely clockwise, it must sweep backwards to return to lower slots
+  if (targetAngle > currentAngle) {
+    for (int a = currentAngle; a <= targetAngle; a++) {
+      servo.write(a);
+      delay(15); // Slightly slower, smoother sweep
+      yield();
+    }
+  } else {
+    for (int a = currentAngle; a >= targetAngle; a--) {
+      servo.write(a);
+      delay(15);
+      yield();
+    }
   }
+  
+  currentPosition = targetSlot;
 }
 
+// ─── WiFi Setup ───────────────────────────────────────────────────────
 void setup_wifi() {
   lcd.clear();
   lcd.print("Connecting WiFi");
-  delay(10);
-  Serial.println();
-  Serial.print("Connecting to ");
+  Serial.print("Connecting to WiFi: ");
   Serial.println(ssid);
-
   WiFi.begin(ssid, password);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  Serial.println("");
-  Serial.println("WiFi connected");
-  Serial.println("IP address: ");
-  Serial.println(WiFi.localIP());
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  Serial.println("\nWiFi Connected! IP: " + WiFi.localIP().toString());
   lcd.clear();
   lcd.print("WiFi Connected!");
   delay(1000);
 }
 
-// Triggers when the ESP32 receives an MQTT message from the laptop/dashboard
-void callback(char* topic, byte* payload, unsigned int length) {
-  String message = "";
-  for (int i = 0; i < length; i++) {
-    message += (char)payload[i];
-  }
-  Serial.print("MQTT Message arrived [");
-  Serial.print(topic);
-  Serial.print("] ");
-  Serial.println(message);
+// ─── MQTT Callback ────────────────────────────────────────────────────
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String msg = "";
+  for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
+  Serial.println("[MQTT RX] " + String(topic) + ": " + msg);
 
-  // If the dashboard sends a "dispense" command
-  if (String(topic) == "dispenser/command") {
-    if (message == "dispense" && !refillMode) {
-      Serial.println("Manual dispense triggered via MQTT!");
-      lastMove = millis() - rotationInterval; // Force immediate dispense
-    }
+  if (String(topic) != "dispenser/command") return;
+
+  // start_cycle — wake up the system
+  if (msg == "start_cycle") {
+    cycleStarted = true;
+    lcd.clear();
+    Serial.println("Cycle started by Dashboard.");
+    mqttClient.publish("dispenser/status", "Cycle Started");
+  }
+
+  // start_demo — trigger demo mode
+  else if (msg == "start_demo") {
+    startDemoTriggered = true;
+  }
+
+  // dispense:N — rotate to slot N and trigger dispense
+  else if (msg.startsWith("dispense:")) {
+    int slot = msg.substring(9).toInt();
+    if (slot < 1 || slot > 7) return;
+
+    Serial.println("Dispensing slot " + String(slot));
+    moveServoToSlot(slot);
+    
+    // Alert the patient
+    buzz(3);
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Take Medicine!");
+    lcd.setCursor(0, 1);
+    lcd.print("Slot " + String(slot) + " - Press btn");
+    
+    // Start acknowledgment tracking
+    waitingForAck = true;
+    ackSlot = slot;
+    dispenseTime = millis();
+    lastAlertTime = millis();
+    
+    // Notify dashboard we are waiting
+    String ackMsg = "ack_wait:" + String(slot);
+    mqttClient.publish("dispenser/status", ackMsg.c_str());
+  }
+
+  // lcd:Line1|Line2 — show custom message
+  else if (msg.startsWith("lcd:")) {
+    String content = msg.substring(4);
+    int sep = content.indexOf('|');
+    lcd.clear();
+    lcd.setCursor(0, 0); lcd.print(sep != -1 ? content.substring(0, sep) : content);
+    lcd.setCursor(0, 1); if (sep != -1) lcd.print(content.substring(sep + 1));
+    showingCustomMessage = true;
+    customMsgTime = millis();
+  }
+
+  // next_dose:HH:MM — update the next dose string
+  else if (msg.startsWith("next_dose:")) {
+    nextDoseStr = msg.substring(10);
   }
 }
 
-void reconnect() {
-  while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
-    String clientId = "SmartDispenser-";
-    clientId += String(random(0, 0xffff), HEX);
-    
-    if (client.connect(clientId.c_str())) {
-      Serial.println("connected to MQTT broker!");
-      client.publish("dispenser/status", "Dispenser Online");
-      
-      // Subscribe to listen for commands from the dashboard
-      client.subscribe("dispenser/command");
+// ─── MQTT Reconnect ───────────────────────────────────────────────────
+void mqttReconnect() {
+  while (!mqttClient.connected()) {
+    Serial.print("Connecting to MQTT...");
+    String clientId = "Dispenser-" + String(random(0xffff), HEX);
+    // LWT: publish "offline" if we disconnect unexpectedly
+    if (mqttClient.connect(clientId.c_str(), "dispenser/status", 0, true, "offline")) {
+      Serial.println("connected!");
+      mqttClient.publish("dispenser/status", "online");
+      mqttClient.subscribe("dispenser/command");
     } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
+      Serial.println("failed, rc=" + String(mqttClient.state()) + " retrying in 5s");
       delay(5000);
     }
   }
 }
 
+// ─── Setup ────────────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
-  
   pinMode(buttonPin, INPUT_PULLUP);
-  pinMode(ledPin, OUTPUT);
+  pinMode(ledPin,    OUTPUT);
   pinMode(buzzerPin, OUTPUT);
-
-  digitalWrite(ledPin, LOW);
+  digitalWrite(ledPin,    LOW);
   digitalWrite(buzzerPin, LOW);
 
   servo.attach(servoPin);
-  servo.write(angle);
+  servo.write(0); // Home position
 
-  lcd.begin(16,2);
-
+  lcd.begin(16, 2);
   setup_wifi();
   
-  // Set time zone (19800 seconds = +5:30 IST)
-  configTime(19800, 0, "pool.ntp.org"); 
+  // Configure Time (IST is UTC+5:30)
+  configTime(19800, 0, "pool.ntp.org", "time.nist.gov"); 
+  setenv("TZ", "IST-5:30", 1);
+  tzset();
 
-  client.setServer(mqtt_server, 1883);
-  client.setCallback(callback);
+  mqttClient.setServer(mqtt_server, 1883);
+  mqttClient.setCallback(mqttCallback);
+  
+  Serial.println("System Ready. Waiting for Dashboard start_cycle command.");
 }
 
+// ─── Loop ─────────────────────────────────────────────────────────────
 void loop() {
-  if (!client.connected()) {
-    reconnect();
+  if (!mqttClient.connected()) mqttReconnect();
+  mqttClient.loop();
+
+  // Heartbeat every 5 seconds
+  static unsigned long lastHeartbeat = 0;
+  if (millis() - lastHeartbeat > 5000) {
+    lastHeartbeat = millis();
+    mqttClient.publish("dispenser/status", "online");
   }
-  client.loop(); // Keeps MQTT connection alive and checks for new messages
 
-  // --- Handling Refill state ---
-  if(refillMode) {
-    lcd.setCursor(0,0);
-    lcd.print("REFILL BOX      ");
-    lcd.setCursor(0,1);
-    lcd.print("Press Button    ");
-
-    if(digitalRead(buttonPin) == LOW) {
-      slotCount = 0;
-      refillMode = false;
-      moveServo(0);
+  // ── Acknowledgment mode ─────────────────────────────────────────────
+  if (waitingForAck) {
+    // Button pressed → dose confirmed!
+    if (digitalRead(buttonPin) == LOW) {
+      waitingForAck = false;
+      String takenMsg = "taken:" + String(ackSlot);
+      mqttClient.publish("dispenser/status", takenMsg.c_str());
+      Serial.println("Dose confirmed for slot " + String(ackSlot));
+      
       lcd.clear();
-      
-      // Notify the dashboard we just refilled!
-      client.publish("dispenser/status", "Refilled securely");
-      Serial.println("Box refilled! Resetting count.");
-      delay(1000);
+      lcd.setCursor(0, 0);
+      lcd.print("  Dose Taken!  ");
+      buzz(1, 50); // One short happy beep
+      delay(2000);
+      lcd.clear();
+      return;
     }
-    return;
-  }
-
-  // --- Display Time ---
-  struct tm timeinfo;
-  if(getLocalTime(&timeinfo)) {
-    lcd.setCursor(0,0);
-    lcd.printf("%02d/%02d/%04d    ", timeinfo.tm_mday, timeinfo.tm_mon+1, timeinfo.tm_year+1900);
-    lcd.setCursor(0,1);
-    lcd.printf("%02d:%02d:%02d  ", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-  }
-
-  // --- Interval Dispensing Logic ---
-  if(millis() - lastMove > rotationInterval) {
-    lastMove = millis();
-
-    if(slotCount < 4) {
-      int newAngle = angle + angleIncrement;
-      moveServo(newAngle);
-      alertUser();
-      slotCount++;
+    
+    // 5 minutes elapsed → missed dose
+    if (millis() - dispenseTime >= MISSED_TIMEOUT) {
+      waitingForAck = false;
+      String missedMsg = "missed:" + String(ackSlot);
+      mqttClient.publish("dispenser/status", missedMsg.c_str());
+      Serial.println("Dose MISSED for slot " + String(ackSlot));
       
-      String statusMsg = "Dose " + String(slotCount) + " dispensed.";
-      Serial.println(statusMsg);
-      
-      // Notify the dashboard a pill was taken
-      client.publish("dispenser/status", statusMsg.c_str());
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("  Dose Missed  ");
+      delay(2000);
+      lcd.clear();
+      return;
     }
 
-    if(slotCount == 4) {
-      refillMode = true;
-      Serial.println("All 4 doses done. Please refill.");
+    // Progressive alarm interval logic
+    unsigned long elapsed = millis() - dispenseTime;
+    unsigned long interval = 10000; // 0-2 mins: every 10s
+    if (elapsed > 240000) interval = 2000;      // 4-5 mins: every 2s
+    else if (elapsed > 120000) interval = 5000; // 2-4 mins: every 5s
+
+    // Alert every interval while waiting
+    if (millis() - lastAlertTime >= interval) {
+      lastAlertTime = millis();
+      buzz(interval == 2000 ? 5 : (interval == 5000 ? 3 : 2), 100); // Faster = more beeps
+      // Refresh the LCD reminder
+      lcd.setCursor(0, 0);
+      lcd.print("Take Medicine!  ");
+      lcd.setCursor(0, 1);
+      lcd.print("Press button!   ");
+    }
+    
+    return; // Don't do anything else while awaiting ack
+  }
+
+  // ── Demo Mode Execution ─────────────────────────────────────────────
+  if (startDemoTriggered) {
+    startDemoTriggered = false; // Reset flag
+    Serial.println("Demo Mode Triggered!");
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("   DEMO MODE    ");
+    buzz(2, 100);
+
+    // Reset to 0
+    moveServoToSlot(0);
+    delay(1000);
+
+    for (int i = 1; i <= 7; i++) {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Demo: Slot " + String(i));
       
-      // Notify dashboard it's empty
-      client.publish("dispenser/status", "Empty - Needs Refill");
+      moveServoToSlot(i);
+      buzz(1, 100);
+      
+      // Wait 5 seconds, keep MQTT alive
+      unsigned long startWait = millis();
+      while (millis() - startWait < 5000) {
+        if (!mqttClient.connected()) mqttReconnect();
+        mqttClient.loop();
+        delay(10);
+      }
+    }
+    
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(" Demo Complete! ");
+    delay(2000);
+    lcd.clear();
+    moveServoToSlot(0); // Return home
+  }
+
+  // ── Custom LCD message timeout ──────────────────────────────────────
+  if (showingCustomMessage && (millis() - customMsgTime > 8000)) {
+    showingCustomMessage = false;
+    lcd.clear();
+  }
+
+  // ── Standard LCD display ────────────────────────────────────────────
+  if (!showingCustomMessage) {
+    struct tm timeinfo;
+    if (!cycleStarted) {
+      lcd.setCursor(0, 0);
+      lcd.print("Waiting for Dash");
+      if (getLocalTime(&timeinfo, 10)) {
+        lcd.setCursor(0, 1);
+        lcd.printf("%02d:%02d:%02d        ", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+      }
+    } else {
+      if (getLocalTime(&timeinfo, 10)) {
+        lcd.setCursor(0, 0);
+        lcd.print("Next Dose: " + nextDoseStr + "  ");
+        lcd.setCursor(0, 1);
+        lcd.printf("%02d:%02d:%02d        ", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+      } else {
+        lcd.setCursor(0, 0);
+        lcd.print("Syncing Time... ");
+      }
     }
   }
 }

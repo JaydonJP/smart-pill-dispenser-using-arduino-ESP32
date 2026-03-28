@@ -1,38 +1,56 @@
 import React from 'react';
-import { Pill, Radio, Heart, Settings } from 'lucide-react';
-import { StatusPanel } from './components/StatusPanel';
-import { SchedulePanel } from './components/SchedulePanel';
-import { EmergencyEject } from './components/EmergencyEject';
-import { LogsPanel } from './components/LogsPanel';
-import { InventoryPanel } from './components/InventoryPanel';
-import { LcdMirror } from './components/LcdMirror';
+import { Pill, Radio, Heart } from 'lucide-react';
 import { useMqtt, useAppState } from './hooks/useAppState';
+import { SetupWizard } from './components/SetupWizard';
+import { StatusPanel } from './components/StatusPanel';
+import { QuickEject } from './components/QuickEject';
+import { InventoryPanel } from './components/InventoryPanel';
+import { CompliancePanel } from './components/CompliancePanel';
+import { LcdMirror } from './components/LcdMirror';
+import { PrescriptionUpload } from './components/PrescriptionUpload';
 
 const App: React.FC = () => {
     const mqtt = useMqtt();
-    const state = useAppState();
+    const state = useAppState(mqtt.lastMessage, mqtt.publish);
 
-    const handleScheduleSync = () => {
-        mqtt.sendScheduleSync(state.pillSlots);
+    // ── Refill handler ────────────────────────────────────────────────
+    const handleRefill = (id: string, total: number) => {
+        state.setMedicines(state.medicines.map(m =>
+            m.id === id ? { ...m, pillsRemaining: total } : m
+        ));
     };
 
-    const handleRefill = (id: string) => {
-        const slot = state.pillSlots.find(s => s.id === id);
-        if (slot) {
-            state.updateSlot(id, { pillsRemaining: slot.pillsTotal });
-        }
+    // ── Start Cycle ───────────────────────────────────────────────────
+    const handleStartCycle = () => {
+        state.setCycleStarted(true);
+        state.setWizardDone(true);
+        mqtt.startCycle();
     };
+
+    // ── Show Setup Wizard if not done ─────────────────────────────────
+    if (!state.wizardDone) {
+        return (
+            <SetupWizard
+                medicines={state.medicines}
+                setMedicines={state.setMedicines}
+                schedules={state.schedules}
+                setSchedules={state.setSchedules}
+                caregiver={state.caregiver}
+                setCaregiver={state.setCaregiver}
+                onFinish={handleStartCycle}
+            />
+        );
+    }
 
     return (
         <div className="min-h-screen bg-navy-950 bg-grid relative">
-            {/* Ambient background glow effects */}
+            {/* Ambient Glow */}
             <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
                 <div className="absolute -top-40 -left-40 w-[500px] h-[500px] bg-teal-500/[0.03] rounded-full blur-3xl" />
                 <div className="absolute -bottom-60 -right-40 w-[600px] h-[600px] bg-teal-600/[0.02] rounded-full blur-3xl" />
-                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[400px] bg-teal-500/[0.015] rounded-full blur-3xl" />
             </div>
 
-            {/* ─── Top Bar ────────────────────────────────────────────── */}
+            {/* ── Header ────────────────────────────────────────────── */}
             <header className="sticky top-0 z-50 backdrop-blur-2xl bg-navy-950/80 border-b border-navy-700/30">
                 <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8">
                     <div className="flex items-center justify-between h-16">
@@ -51,77 +69,91 @@ const App: React.FC = () => {
                             </div>
                         </div>
 
-                        {/* Right Nav */}
-                        <div className="flex items-center gap-4">
-                            {/* MQTT Status */}
+                        {/* Right Side */}
+                        <div className="flex items-center gap-3">
+                            {/* Cycle State */}
+                            {state.cycleStarted ? (
+                                <div className="px-3 py-1.5 rounded-lg bg-teal-500/10 border border-teal-500/20 text-teal-400 text-xs font-bold">
+                                    ● CYCLE RUNNING
+                                </div>
+                            ) : (
+                                <button onClick={handleStartCycle}
+                                    className="px-3 py-1.5 rounded-lg bg-teal-500/20 border border-teal-500/40 text-teal-400 text-xs font-bold hover:bg-teal-500/30 transition-all animate-pulse-soft">
+                                    ▶ START CYCLE
+                                </button>
+                            )}
+
+                            {/* Demo Mode Button */}
+                            <button onClick={mqtt.startDemo}
+                                className="px-3 py-1.5 rounded-lg bg-indigo-500/20 border border-indigo-500/40 text-indigo-400 text-xs font-bold hover:bg-indigo-500/30 transition-all">
+                                🚀 DEMO MODE
+                            </button>
+
+                            {/* MQTT Indicator */}
                             <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-navy-800/50 border border-navy-600/25">
                                 <Radio className={`w-3 h-3 ${mqtt.connected ? 'text-teal-400 animate-pulse-soft' : 'text-red-400'}`} />
-                                <span className={`text-[11px] font-bold tracking-wide ${mqtt.connected ? 'text-teal-400' : 'text-red-400'}`}>
-                                    {mqtt.connected ? 'MQTT CONNECTED' : 'DISCONNECTED'}
+                                <span className={`text-[11px] font-bold ${mqtt.connected ? 'text-teal-400' : 'text-red-400'}`}>
+                                    {mqtt.connected ? 'MQTT' : 'OFFLINE'}
                                 </span>
                             </div>
 
-                            <div className="w-px h-6 bg-navy-600/30 hidden sm:block" />
-
-                            {/* Settings */}
-                            <button className="w-9 h-9 rounded-xl bg-navy-800/40 border border-navy-600/25 flex items-center justify-center text-surface-400 hover:text-teal-400 hover:border-teal-500/20 transition-all">
-                                <Settings className="w-4 h-4" />
+                            {/* Back to Setup */}
+                            <button onClick={() => { state.setWizardDone(false); state.setCycleStarted(false); }}
+                                className="text-xs text-surface-500 hover:text-surface-300 transition-colors">
+                                ⚙ Setup
                             </button>
                         </div>
                     </div>
                 </div>
             </header>
 
-            {/* ─── Main Content ───────────────────────────────────────── */}
+            {/* ── Main Grid ─────────────────────────────────────────── */}
             <main className="relative z-10 max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
 
-                {/* Row 1: Status + Emergency */}
+                {/* Row 1: Status + Quick Eject */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <div className="lg:col-span-1">
-                        <StatusPanel
-                            status={state.machineStatus}
-                            mqttConnected={mqtt.connected}
-                            onRefresh={mqtt.sendStatusRequest}
-                        />
-                    </div>
+                    <StatusPanel
+                        status={state.status}
+                        connected={mqtt.connected}
+                        medicines={state.medicines}
+                        schedules={state.schedules}
+                        onRefresh={() => mqtt.publish('status')}
+                    />
                     <div className="lg:col-span-2">
-                        <EmergencyEject
-                            slots={state.pillSlots}
+                        <QuickEject
+                            medicines={state.medicines}
+                            schedules={state.schedules}
                             safetyLocked={state.safetyLocked}
                             onToggleLock={() => state.setSafetyLocked(!state.safetyLocked)}
-                            onEmergencyDispense={state.emergencyDispense}
-                            mqttSendDispense={mqtt.sendDispense}
+                            onQuickEject={state.quickEject}
                         />
                     </div>
                 </div>
 
-                {/* Row 2: Schedule + Inventory */}
+                {/* Row 2: Inventory + Compliance */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    <SchedulePanel
-                        slots={state.pillSlots}
-                        onAdd={state.addSlot}
-                        onUpdate={state.updateSlot}
-                        onRemove={state.removeSlot}
-                        onSync={handleScheduleSync}
-                    />
                     <InventoryPanel
-                        slots={state.pillSlots}
+                        medicines={state.medicines}
+                        schedules={state.schedules}
                         onRefill={handleRefill}
                     />
+                    <CompliancePanel logs={state.logs} />
                 </div>
 
-                {/* Row 3: Logs + LCD */}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <div className="lg:col-span-2">
-                        <LogsPanel logs={state.dispenseLogs} />
-                    </div>
-                    <div className="lg:col-span-1">
-                        <LcdMirror onSend={mqtt.sendLcdMessage} />
-                    </div>
+                {/* Row 3: AI Prescription + LCD Mirror */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <PrescriptionUpload
+                        medicines={state.medicines}
+                        setMedicines={state.setMedicines}
+                        schedules={state.schedules}
+                        setSchedules={state.setSchedules}
+                    />
+                    <LcdMirror onSend={mqtt.sendLcd} />
                 </div>
+
             </main>
 
-            {/* ─── Footer ─────────────────────────────────────────────── */}
+            {/* ── Footer ────────────────────────────────────────────── */}
             <footer className="relative z-10 border-t border-navy-700/25 mt-8">
                 <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-5 flex flex-col sm:flex-row items-center justify-between gap-2">
                     <div className="flex items-center gap-2 text-surface-500 text-xs">
@@ -129,11 +161,11 @@ const App: React.FC = () => {
                         <span>© 2026 <strong className="text-surface-400">MediSync</strong> — ESP32-S3 Smart Pill Dispenser</span>
                     </div>
                     <div className="flex items-center gap-4 text-[10px] text-surface-600 tracking-wider font-mono">
-                        <span>DS3231 RTC</span>
-                        <span className="w-1 h-1 rounded-full bg-surface-700" />
-                        <span>PCF8574 LCD</span>
+                        <span>7 Slots</span>
                         <span className="w-1 h-1 rounded-full bg-surface-700" />
                         <span>SG90 Servo</span>
+                        <span className="w-1 h-1 rounded-full bg-surface-700" />
+                        <span>ESP32-S3</span>
                     </div>
                 </div>
             </footer>

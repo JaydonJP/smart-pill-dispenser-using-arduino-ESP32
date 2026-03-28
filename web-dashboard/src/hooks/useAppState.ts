@@ -1,159 +1,229 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import mqtt from 'mqtt';
 import {
-    PillSlot, DispenseLog, MachineStatus, AppState,
-    MqttDispensePayload, MqttScheduleSyncPayload,
-    MqttStatusRequestPayload, MqttLcdMessagePayload,
-    MQTT_TOPICS,
+    Medicine, Schedule, DispenseLog, CaregiverContact,
+    MachineStatus, MQTT,
 } from '../types';
 import {
-    generateId, INITIAL_SLOTS, INITIAL_LOGS, INITIAL_STATUS,
+    generateId, EMPTY_MEDICINES, INITIAL_STATUS,
 } from '../utils/helpers';
 
-// ─── MQTT Hook ──────────────────────────────────────────────────────
-// NOTE: In production, replace this with actual MQTT.js client connection.
-// This mock simulates the bi-directional channel for demo purposes.
-
+// ─── MQTT Hook ────────────────────────────────────────────────────────
 export function useMqtt() {
+    const [mqttClient, setMqttClient] = useState<mqtt.MqttClient | null>(null);
     const [connected, setConnected] = useState(false);
     const [lastMessage, setLastMessage] = useState<string | null>(null);
-    const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
 
     useEffect(() => {
-        // Simulate connection handshake
-        const timer = setTimeout(() => setConnected(true), 1200);
-        return () => {
-            clearTimeout(timer);
-            if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-        };
+        const url = `ws://${window.location.hostname}:9001`;
+        const client = mqtt.connect(url);
+        client.on('connect', () => {
+            setConnected(true);
+            setMqttClient(client);
+            client.subscribe(MQTT.STATUS);
+        });
+        client.on('message', (_, msg) => setLastMessage(msg.toString()));
+        client.on('error', console.error);
+        client.on('close', () => setConnected(false));
+        return () => { client.end(); };
     }, []);
 
-    const publish = useCallback((topic: string, payload: object) => {
-        const msg = JSON.stringify(payload);
-        console.log(`[MQTT TX] ${topic}:`, msg);
-        setLastMessage(msg);
-        // In production: client.publish(topic, msg)
-    }, []);
-
-    const sendDispense = useCallback((slot: number, priority: 'normal' | 'emergency') => {
-        const payload: MqttDispensePayload = {
-            action: 'dispense',
-            slot,
-            priority,
-            timestamp: new Date().toISOString(),
-        };
-        publish(MQTT_TOPICS.COMMAND, payload);
-    }, [publish]);
-
-    const sendScheduleSync = useCallback((slots: PillSlot[]) => {
-        const payload: MqttScheduleSyncPayload = {
-            action: 'schedule_sync',
-            slots: slots.map(s => ({
-                index: s.slotIndex,
-                name: s.name,
-                time: s.dosageTime,
-                frequency: s.frequency,
-                enabled: s.enabled,
-            })),
-            rtcSync: new Date().toISOString(),
-        };
-        publish(MQTT_TOPICS.COMMAND, payload);
-    }, [publish]);
-
-    const sendStatusRequest = useCallback(() => {
-        const payload: MqttStatusRequestPayload = {
-            action: 'status_request',
-            timestamp: new Date().toISOString(),
-        };
-        publish(MQTT_TOPICS.COMMAND, payload);
-    }, [publish]);
-
-    const sendLcdMessage = useCallback((line1: string, line2: string) => {
-        const payload: MqttLcdMessagePayload = {
-            action: 'lcd_message',
-            line1: line1.slice(0, 16),
-            line2: line2.slice(0, 16),
-        };
-        publish(MQTT_TOPICS.COMMAND, payload);
-    }, [publish]);
+    const publish = useCallback((msg: string) => {
+        mqttClient?.publish(MQTT.CMD, msg);
+        console.log('[MQTT TX]', msg);
+    }, [mqttClient]);
 
     return {
         connected,
         lastMessage,
-        sendDispense,
-        sendScheduleSync,
-        sendStatusRequest,
-        sendLcdMessage,
+        publish,
+        startCycle:      () => publish('start_cycle'),
+        startDemo:       () => publish('start_demo'),
+        dispenseSlot:    (n: number) => publish(`dispense:${n}`),
+        sendLcd:         (l1: string, l2: string) => publish(`lcd:${l1}|${l2}`),
     };
 }
 
-// ─── App State Hook ─────────────────────────────────────────────────
-export function useAppState() {
-    const [machineStatus, setMachineStatus] = useState<MachineStatus>(INITIAL_STATUS);
-    const [pillSlots, setPillSlots] = useState<PillSlot[]>(INITIAL_SLOTS);
-    const [dispenseLogs, setDispenseLogs] = useState<DispenseLog[]>(INITIAL_LOGS);
-    const [safetyLocked, setSafetyLocked] = useState(true);
+// ─── App State Hook ───────────────────────────────────────────────────
+export function useAppState(lastMessage: string | null, publish: (m: string) => void) {
 
-    // Simulate heartbeat every 5s
-    useEffect(() => {
-        const interval = setInterval(() => {
-            setMachineStatus(prev => ({
-                ...prev,
-                lastHeartbeat: new Date().toISOString(),
-                currentTime: new Date().toISOString(),
-            }));
-        }, 5000);
-        return () => clearInterval(interval);
-    }, []);
-
-    const addSlot = useCallback((slot: Omit<PillSlot, 'id'>) => {
-        setPillSlots(prev => [...prev, { ...slot, id: generateId() }]);
-    }, []);
-
-    const updateSlot = useCallback((id: string, updates: Partial<PillSlot>) => {
-        setPillSlots(prev =>
-            prev.map(s => (s.id === id ? { ...s, ...updates } : s))
-        );
-    }, []);
-
-    const removeSlot = useCallback((id: string) => {
-        setPillSlots(prev => prev.filter(s => s.id !== id));
-    }, []);
-
-    const dispense = useCallback((slotId: string, status: DispenseLog['status'] = 'success') => {
-        setPillSlots(prev =>
-            prev.map(s =>
-                s.id === slotId && s.pillsRemaining > 0
-                    ? { ...s, pillsRemaining: s.pillsRemaining - 1 }
-                    : s
-            )
-        );
-        const slot = pillSlots.find(s => s.id === slotId);
-        const log: DispenseLog = {
-            id: generateId(),
-            slotId,
-            slotName: slot?.name ?? 'Unknown',
-            timestamp: new Date().toISOString(),
-            status,
-            pillsDispensed: status === 'missed' ? 0 : 1,
+    const [medicines,   setMedicines]   = useState<Medicine[]>(() => {
+        const saved = localStorage.getItem('medisync_meds');
+        return saved ? JSON.parse(saved) : EMPTY_MEDICINES;
+    });
+    const [schedules,   setSchedules]   = useState<Schedule[]>(() => {
+        const saved = localStorage.getItem('medisync_schedules');
+        return saved ? JSON.parse(saved) : [];
+    });
+    const [logs,        setLogs]        = useState<DispenseLog[]>(() => {
+        const saved = localStorage.getItem('medisync_logs');
+        return saved ? JSON.parse(saved) : [];
+    });
+    const [caregiver,   setCaregiver]   = useState<CaregiverContact>(() => {
+        const saved = localStorage.getItem('medisync_caregiver');
+        return saved ? JSON.parse(saved) : {
+            id: generateId(), name: '', email: '', phone: '', notifyEmail: true, notifySms: true,
         };
-        setDispenseLogs(prev => [log, ...prev]);
-        setMachineStatus(prev => ({
-            ...prev,
-            lastDispensed: new Date().toISOString(),
-        }));
-    }, [pillSlots]);
+    });
+    const [status, setStatus]           = useState<MachineStatus>(INITIAL_STATUS);
+    const [safetyLocked, setSafetyLocked] = useState(true);
+    const [cycleStarted, setCycleStarted] = useState(() => localStorage.getItem('medisync_cycle') === 'true');
+    const [wizardDone, setWizardDone]   = useState(() => localStorage.getItem('medisync_wizard') === 'true');
 
-    const emergencyDispense = useCallback((slotIndex: number) => {
-        const slot = pillSlots.find(s => s.slotIndex === slotIndex);
-        if (slot) dispense(slot.id, 'emergency');
-    }, [pillSlots, dispense]);
+    // ── Persist to LocalStorage ──────────────────────────────────────────
+    useEffect(() => { localStorage.setItem('medisync_meds', JSON.stringify(medicines)); }, [medicines]);
+    useEffect(() => { localStorage.setItem('medisync_schedules', JSON.stringify(schedules)); }, [schedules]);
+    useEffect(() => { localStorage.setItem('medisync_logs', JSON.stringify(logs)); }, [logs]);
+    useEffect(() => { localStorage.setItem('medisync_caregiver', JSON.stringify(caregiver)); }, [caregiver]);
+    useEffect(() => { localStorage.setItem('medisync_cycle', String(cycleStarted)); }, [cycleStarted]);
+    useEffect(() => { localStorage.setItem('medisync_wizard', String(wizardDone)); }, [wizardDone]);
+
+    const lastDispatchedRef = useRef<Record<string, string>>({}); // scheduleId → date
+
+    // ── MQTT message ingestion ─────────────────────────────────────────
+    useEffect(() => {
+        if (!lastMessage) return;
+        const now = new Date().toISOString();
+
+        if (lastMessage === 'online') {
+            setStatus(prev => ({ ...prev, online: true, lastHeartbeat: now }));
+        } else if (lastMessage === 'offline') {
+            setStatus(prev => ({ ...prev, online: false }));
+        } else if (lastMessage === 'Cycle Started') {
+            setCycleStarted(true);
+            setStatus(prev => ({ ...prev, cycleStarted: true }));
+        } else if (lastMessage.startsWith('taken:')) {
+            const slot = parseInt(lastMessage.split(':')[1]);
+            const med = medicines.find(m => m.slotIndex === slot);
+            if (med) {
+                setMedicines(prev => prev.map(m =>
+                    m.slotIndex === slot
+                        ? { ...m, pillsRemaining: Math.max(0, m.pillsRemaining - m.pillsPerDose) }
+                        : m
+                ));
+                setLogs(prev => [{
+                    id: generateId(), medicineId: med.id,
+                    medicineName: med.name, slotIndex: slot,
+                    scheduledAt: now, dispensedAt: now,
+                    status: 'success', pillsDispensed: med.pillsPerDose,
+                }, ...prev]);
+                setStatus(prev => ({ ...prev, lastDispensed: now }));
+            }
+        } else if (lastMessage.startsWith('missed:')) {
+            const slot = parseInt(lastMessage.split(':')[1]);
+            const med = medicines.find(m => m.slotIndex === slot);
+            if (med) {
+                // Log the missed event
+                setLogs(prev => [{
+                    id: generateId(), medicineId: med.id,
+                    medicineName: med.name, slotIndex: slot,
+                    scheduledAt: now, dispensedAt: now,
+                    status: 'missed', pillsDispensed: 0,
+                }, ...prev]);
+
+                // Fire caregiver alert via Supabase Edge Function
+                if (caregiver.email || caregiver.phone) {
+                    const SUPABASE_URL   = import.meta.env.VITE_SUPABASE_URL ?? '';
+                    const SUPABASE_ANON  = import.meta.env.VITE_SUPABASE_ANON_KEY ?? '';
+                    fetch(`${SUPABASE_URL}/functions/v1/notify-caregiver`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${SUPABASE_ANON}`,
+                        },
+                        body: JSON.stringify({
+                            medicineName: med.name,
+                            slotIndex: slot,
+                            scheduledAt: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+                            caregiverName: caregiver.name || 'Caregiver',
+                            caregiverEmail: caregiver.email,
+                            caregiverPhone: caregiver.phone,
+                            notifyEmail: caregiver.notifyEmail,
+                            notifyWhatsapp: caregiver.notifySms, // notifySms field now controls WhatsApp
+                        }),
+                    }).catch(console.error);
+                }
+            }
+        }
+    }, [lastMessage]);
+
+    // ── Offline watcher (12s no heartbeat) ────────────────────────────
+    useEffect(() => {
+        const timer = setInterval(() => {
+            setStatus(prev => {
+                if (!prev.online || !prev.lastHeartbeat) return prev;
+                if (Date.now() - new Date(prev.lastHeartbeat).getTime() > 12000)
+                    return { ...prev, online: false };
+                return prev;
+            });
+        }, 3000);
+        return () => clearInterval(timer);
+    }, []);
+
+    // ── Background Scheduler ──────────────────────────────────────────
+    useEffect(() => {
+        if (!cycleStarted) return;
+        const timer = setInterval(() => {
+            const now = new Date();
+            const hhMM = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
+            const today = now.toISOString().split('T')[0];
+
+            const enabled = schedules.filter(s => s.enabled).sort((a, b) => a.doseTime.localeCompare(b.doseTime));
+            
+            // 1. Sync next dose to LCD
+            const availableToday = enabled.filter(s => !lastDispatchedRef.current[`${s.id}-${today}`]);
+            const nextTime = availableToday.find(s => s.doseTime >= hhMM)?.doseTime ?? availableToday[0]?.doseTime ?? '--:--';
+            publish(`next_dose:${nextTime}`);
+
+            // 2. Dispatch due doses
+            schedules.forEach(s => {
+                if (!s.enabled || s.doseTime !== hhMM) return;
+                const key = `${s.id}-${today}`;
+                if (lastDispatchedRef.current[key]) return;
+                const med = medicines.find(m => m.id === s.medicineId && m.enabled && m.pillsRemaining > 0);
+                if (!med) return;
+                lastDispatchedRef.current[key] = today;
+                publish(`dispense:${med.slotIndex}`);
+            });
+        }, 10000); // Check every 10s
+        return () => clearInterval(timer);
+    }, [cycleStarted, schedules, medicines, publish]);
+
+    // ── Emergency/Quick Eject ─────────────────────────────────────────
+    const quickEject = useCallback(() => {
+        const now = new Date();
+        const hhMM = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
+        const today = now.toISOString().split('T')[0];
+        const enabled = schedules.filter(s => s.enabled)
+            .sort((a, b) => a.doseTime.localeCompare(b.doseTime));
+        
+        // Find the first schedule that HAS NOT been dispatched today and is chronologically next
+        const availableToday = enabled.filter(s => !lastDispatchedRef.current[`${s.id}-${today}`]);
+        const next = availableToday.find(s => s.doseTime >= hhMM) ?? availableToday[0];
+        
+        if (!next) return;
+        const med = medicines.find(m => m.id === next.medicineId && m.pillsRemaining > 0);
+        if (!med) return;
+        
+        // Mark as taken so next eject picks the next one
+        lastDispatchedRef.current[`${next.id}-${today}`] = today; 
+        publish(`dispense:${med.slotIndex}`);
+        
+        // Push updated next dose immediately
+        const newAvailable = availableToday.filter(s => s.id !== next.id);
+        const nextTime = newAvailable.find(s => s.doseTime >= hhMM)?.doseTime ?? newAvailable[0]?.doseTime ?? '--:--';
+        publish(`next_dose:${nextTime}`);
+    }, [schedules, medicines, publish]);
 
     return {
-        machineStatus, setMachineStatus,
-        pillSlots, setPillSlots,
-        dispenseLogs, setDispenseLogs,
+        medicines, setMedicines,
+        schedules, setSchedules,
+        logs, setLogs,
+        caregiver, setCaregiver,
+        status, setStatus,
         safetyLocked, setSafetyLocked,
-        addSlot, updateSlot, removeSlot,
-        dispense, emergencyDispense,
+        cycleStarted, setCycleStarted,
+        wizardDone, setWizardDone,
+        quickEject,
     };
 }

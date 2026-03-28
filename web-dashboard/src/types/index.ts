@@ -1,94 +1,77 @@
 // ─── Core Domain Types ───────────────────────────────────────────────
-export interface PillSlot {
+
+/** One of the 7 physical medicine compartments on the dispenser wheel */
+export interface Medicine {
     id: string;
+    slotIndex: number;       // 1–7 (physical slot on the wheel)
     name: string;
-    dosageTime: string;        // HH:MM format
-    frequency: 'daily' | 'twice_daily' | 'weekly' | 'custom';
-    pillsRemaining: number;
+    colorLabel: string;      // Color of the compartment e.g. "Red"
     pillsTotal: number;
+    pillsRemaining: number;
+    pillsPerDose: number;    // How many pills per dispense
     enabled: boolean;
-    slotIndex: number;         // Physical slot on the dispenser (0-3)
+}
+
+/** A scheduled dose time for a specific medicine */
+export interface Schedule {
+    id: string;
+    medicineId: string;
+    doseTime: string;        // HH:MM format
+    frequency: 'daily' | 'twice_daily' | 'weekly' | 'custom';
+    daysOfWeek: number[];    // 1=Mon ... 7=Sun
+    enabled: boolean;
 }
 
 export interface DispenseLog {
     id: string;
-    slotId: string;
-    slotName: string;
-    timestamp: string;         // ISO 8601
+    medicineId: string;
+    medicineName: string;
+    slotIndex: number;
+    scheduledAt: string;     // ISO 8601
+    dispensedAt: string;     // ISO 8601
     status: 'success' | 'missed' | 'manual' | 'emergency';
     pillsDispensed: number;
 }
 
+export interface CaregiverContact {
+    id: string;
+    name: string;
+    email: string;
+    phone: string;           // E.164 e.g. +919876543210
+    notifyEmail: boolean;
+    notifySms: boolean;
+}
+
 export interface MachineStatus {
     online: boolean;
-    lastHeartbeat: string;     // ISO 8601
-    lastDispensed: string;     // ISO 8601
-    nextScheduledDose: string; // ISO 8601
-    currentTime: string;       // From DS3231 RTC
-    wifiRssi: number;
-    firmwareVersion: string;
-    refillMode: boolean;
+    lastHeartbeat: string;
+    lastDispensed: string;
+    nextScheduledAt: string;
+    currentSlot: number;     // Where the servo currently points
+    cycleStarted: boolean;
 }
 
-// ─── MQTT JSON Payloads ─────────────────────────────────────────────
-export type ActionType = 'dispense' | 'schedule_sync' | 'status_request' | 'lcd_message' | 'safety_lock';
-export type Priority = 'normal' | 'emergency';
-
-export interface MqttDispensePayload {
-    action: 'dispense';
-    slot: number;
-    priority: Priority;
-    timestamp: string;
-}
-
-export interface MqttScheduleSyncPayload {
-    action: 'schedule_sync';
-    slots: Array<{
-        index: number;
-        name: string;
-        time: string;
-        frequency: string;
-        enabled: boolean;
-    }>;
-    rtcSync: string;           // Current browser time for RTC offset
-}
-
-export interface MqttStatusRequestPayload {
-    action: 'status_request';
-    timestamp: string;
-}
-
-export interface MqttLcdMessagePayload {
-    action: 'lcd_message';
-    line1: string;             // Max 16 chars
-    line2: string;             // Max 16 chars
-}
-
-export interface MqttSafetyLockPayload {
-    action: 'safety_lock';
-    locked: boolean;
-}
-
-export type MqttPayload =
-    | MqttDispensePayload
-    | MqttScheduleSyncPayload
-    | MqttStatusRequestPayload
-    | MqttLcdMessagePayload
-    | MqttSafetyLockPayload;
-
-// ─── MQTT Topics ────────────────────────────────────────────────────
-export const MQTT_TOPICS = {
-    COMMAND: 'medisync/command',
-    STATUS: 'medisync/status',
-    LOG: 'medisync/log',
-    HEARTBEAT: 'medisync/heartbeat',
+// ─── MQTT Topics ─────────────────────────────────────────────────────
+export const MQTT = {
+    CMD:    'dispenser/command',
+    STATUS: 'dispenser/status',
 } as const;
 
-// ─── App State ──────────────────────────────────────────────────────
-export interface AppState {
-    machineStatus: MachineStatus;
-    pillSlots: PillSlot[];
-    dispenseLogs: DispenseLog[];
-    mqttConnected: boolean;
-    safetyLocked: boolean;
-}
+// ─── Wizard Step ─────────────────────────────────────────────────────
+export type WizardStep = 'slots' | 'schedule' | 'caregiver' | 'done';
+
+// ─── Slot Color Options ───────────────────────────────────────────────
+export const SLOT_COLORS = [
+    'Red', 'Blue', 'Green', 'Yellow', 'Orange', 'Purple', 'White'
+] as const;
+export type SlotColor = typeof SLOT_COLORS[number];
+
+export const COLOR_MAP: Record<SlotColor, string> = {
+    Red:    '#ef4444',
+    Blue:   '#3b82f6',
+    Green:  '#22c55e',
+    Yellow: '#eab308',
+    Orange: '#f97316',
+    Purple: '#a855f7',
+    White:  '#e5e7eb',
+};

@@ -1,103 +1,81 @@
 import React from 'react';
-import { Package, AlertCircle, RefreshCw } from 'lucide-react';
-import { PillSlot } from '../types';
-import { pillPercentage, pillBarColor, pillBarGlow } from '../utils/helpers';
+import { Package, AlertTriangle } from 'lucide-react';
+import { Medicine, Schedule, COLOR_MAP, SlotColor } from '../types';
+import { pillPct, pillBarColor, weeklyPillCount } from '../utils/helpers';
 
 interface Props {
-    slots: PillSlot[];
-    onRefill: (id: string) => void;
+    medicines: Medicine[];
+    schedules: Schedule[];
+    onRefill: (id: string, total: number) => void;
 }
 
-export const InventoryPanel: React.FC<Props> = ({ slots, onRefill }) => {
-    const lowStock = slots.filter(s => pillPercentage(s) <= 20 && s.enabled);
-    const totalPills = slots.reduce((sum, s) => sum + s.pillsRemaining, 0);
-    const totalCapacity = slots.reduce((sum, s) => sum + s.pillsTotal, 0);
+export const InventoryPanel: React.FC<Props> = ({ medicines, schedules, onRefill }) => {
+    const enabled = medicines.filter(m => m.enabled);
 
     return (
-        <div className="card p-6 animate-fade-in">
-            {/* Header */}
-            <div className="flex items-center justify-between mb-5">
-                <h2 className="heading-section">
-                    <div className="w-8 h-8 rounded-lg bg-teal-500/10 border border-teal-500/20 flex items-center justify-center">
-                        <Package className="w-4 h-4 text-teal-400" />
-                    </div>
-                    Inventory
-                </h2>
-                {lowStock.length > 0 && (
-                    <span className="badge-warning">
-                        <AlertCircle className="w-3 h-3" />
-                        {lowStock.length} Low
-                    </span>
-                )}
-            </div>
+        <div className="card p-5">
+            <h2 className="heading-section mb-5"><Package className="w-4 h-4 text-teal-400" /> Inventory & Refill Guide</h2>
+            
+            {enabled.length === 0 && (
+                <p className="text-surface-500 text-sm text-center py-6">No medicines configured. Complete setup first.</p>
+            )}
 
-            {/* Total Overview */}
-            <div className="mb-5 p-3.5 bg-navy-800/40 rounded-xl border border-navy-600/20">
-                <div className="flex items-center justify-between mb-2">
-                    <span className="text-label !mt-0">Total Inventory</span>
-                    <span className="text-sm font-bold text-white">{totalPills} / {totalCapacity}</span>
-                </div>
-                <div className="bar-track !h-2">
-                    <div
-                        className="bar-fill bg-gradient-to-r from-teal-500 to-teal-400"
-                        style={{ width: `${totalCapacity > 0 ? (totalPills / totalCapacity) * 100 : 0}%` }}
-                    />
-                </div>
-            </div>
+            <div className="space-y-4">
+                {enabled.map(med => {
+                    const pct = pillPct(med);
+                    const medScheds = schedules.filter(s => s.medicineId === med.id && s.enabled);
+                    const weeklyTotal = medScheds.reduce((a, s) => a + weeklyPillCount(s) * med.pillsPerDose, 0);
+                    const weeksLeft = weeklyTotal > 0 ? (med.pillsRemaining / weeklyTotal).toFixed(1) : '∞';
+                    const isEmpty = med.pillsRemaining === 0;
+                    const isLow = pct <= 20 && !isEmpty;
 
-            {/* Inventory Cards */}
-            <div className="space-y-3">
-                {slots.map(slot => {
-                    const pct = pillPercentage(slot);
-                    const isLow = pct <= 20 && slot.enabled;
                     return (
-                        <div
-                            key={slot.id}
-                            className={`p-4 rounded-xl border transition-all duration-200 ${isLow
-                                    ? 'bg-red-500/5 border-red-500/15 hover:border-red-500/25'
-                                    : 'bg-navy-800/30 border-navy-600/20 hover:border-navy-500/30'
-                                }`}
-                        >
-                            <div className="flex items-center justify-between mb-3">
-                                <div className="flex items-center gap-2.5">
-                                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${isLow
-                                            ? 'bg-red-500/15 border border-red-500/20 text-red-400'
-                                            : 'bg-teal-500/10 border border-teal-500/20 text-teal-400'
-                                        }`}>
-                                        S{slot.slotIndex + 1}
+                        <div key={med.id} className={`rounded-xl border p-4 ${isEmpty ? 'border-red-500/30 bg-red-500/5' : isLow ? 'border-amber-500/30 bg-amber-500/5' : 'border-navy-600/25 bg-navy-800/30'}`}>
+                            {/* Header */}
+                            <div className="flex items-center gap-2 mb-3">
+                                <div className="w-4 h-4 rounded-full flex-shrink-0" style={{ background: COLOR_MAP[med.colorLabel as SlotColor] ?? '#fff' }} />
+                                <span className="text-white font-bold text-sm flex-1">{med.name}</span>
+                                <span className="text-xs text-surface-500 font-mono">Slot {med.slotIndex}</span>
+                            </div>
+
+                            {/* Progress Bar */}
+                            <div className="w-full bg-navy-700/50 rounded-full h-2 mb-2">
+                                <div className={`${pillBarColor(pct)} rounded-full h-2 transition-all`} style={{ width: `${pct}%` }} />
+                            </div>
+
+                            {/* Stats Row */}
+                            <div className="flex justify-between text-xs text-surface-400 mb-3">
+                                <span>{med.pillsRemaining}/{med.pillsTotal} pills</span>
+                                <span>{pct}% remaining</span>
+                                <span>{weeksLeft} weeks supply</span>
+                            </div>
+
+                            {/* Weekly count */}
+                            {weeklyTotal > 0 && (
+                                <p className="text-xs text-teal-400/80 mb-3">📊 {weeklyTotal} pills needed per week</p>
+                            )}
+
+                            {/* Refill instruction if empty or low */}
+                            {(isEmpty || isLow) && (
+                                <div className={`flex items-start gap-2 rounded-lg p-3 mb-3 ${isEmpty ? 'bg-red-500/10 border border-red-500/20' : 'bg-amber-500/10 border border-amber-500/20'}`}>
+                                    <AlertTriangle className={`w-3.5 h-3.5 flex-shrink-0 mt-0.5 ${isEmpty ? 'text-red-400' : 'text-amber-400'}`} />
+                                    <div className="text-xs">
+                                        <p className={`font-bold mb-0.5 ${isEmpty ? 'text-red-300' : 'text-amber-300'}`}>
+                                            {isEmpty ? 'Slot Empty — Refill Required' : 'Running Low — Refill Soon'}
+                                        </p>
+                                        <p className={isEmpty ? 'text-red-300/70' : 'text-amber-300/70'}>
+                                            Open the dispenser cover. Locate the <strong>{med.colorLabel}</strong> compartment (Slot {med.slotIndex}). 
+                                            Add <strong>{weeklyTotal * 2}</strong> tablets for a 2-week supply.
+                                        </p>
                                     </div>
-                                    <span className="text-sm font-semibold text-white">{slot.name}</span>
-                                </div>
-                                {isLow && (
-                                    <button
-                                        onClick={() => onRefill(slot.id)}
-                                        className="btn-primary text-[11px] px-3 py-1.5 !rounded-lg"
-                                    >
-                                        <RefreshCw className="w-3 h-3" />
-                                        Refill
-                                    </button>
-                                )}
-                            </div>
-
-                            <div className="flex items-center gap-3">
-                                <div className="bar-track flex-1">
-                                    <div
-                                        className={`bar-fill ${pillBarColor(pct)} ${pillBarGlow(pct)}`}
-                                        style={{ width: `${pct}%` }}
-                                    />
-                                </div>
-                                <span className={`text-sm font-mono font-bold min-w-[56px] text-right ${pct > 50 ? 'text-teal-400' : pct > 20 ? 'text-amber-400' : 'text-red-400'
-                                    }`}>
-                                    {slot.pillsRemaining}/{slot.pillsTotal}
-                                </span>
-                            </div>
-
-                            {isLow && (
-                                <div className="mt-2.5 flex items-center gap-1.5 text-[11px] text-red-300/70">
-                                    <AlertCircle className="w-3 h-3" />
-                                    Low stock — {slot.pillsRemaining} pills remaining
                                 </div>
                             )}
+
+                            {/* Refill Button */}
+                            <button onClick={() => onRefill(med.id, med.pillsTotal)}
+                                className="w-full text-xs py-2 rounded-lg bg-navy-700/50 border border-navy-600/25 text-surface-300 hover:border-teal-500/30 hover:text-teal-400 transition-all font-medium">
+                                ↺ Mark as Refilled
+                            </button>
                         </div>
                     );
                 })}

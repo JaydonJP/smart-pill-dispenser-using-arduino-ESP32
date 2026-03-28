@@ -3,8 +3,8 @@
 #include <ESP32Servo.h>
 #include "time.h"
 
-const char* ssid = "danu";
-const char* password = "1234b4321";
+const char* ssid = "Redmi Note 12 5G";
+const char* password = "jaydonjp";
 
 LiquidCrystal lcd(4,5,6,7,15,16);
 

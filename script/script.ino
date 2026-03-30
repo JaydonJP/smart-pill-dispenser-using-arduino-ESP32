@@ -212,8 +212,10 @@ void setup() {
   digitalWrite(ledPin,    LOW);
   digitalWrite(buzzerPin, LOW);
 
-  servo.attach(servoPin);
+  // Initializing with specific min/max pulse widths often eliminates MG90S jitter natively
+  servo.attach(servoPin, 500, 2400);
   servo.write(0); // Home position
+  delay(500);     // Allow it to reach home
 
   lcd.begin(16, 2);
   setup_wifi();
@@ -307,21 +309,44 @@ void loop() {
     moveServoToSlot(0);
     delay(1000);
 
-    for (int i = 1; i <= 7; i++) {
+    for (int i = 1; i <= 4; i++) {
+      // Wait 5 seconds before turning
       lcd.clear();
       lcd.setCursor(0, 0);
-      lcd.print("Demo: Slot " + String(i));
+      lcd.print(" Demo: Waiting  ");
+      lcd.setCursor(0, 1);
+      lcd.print("   5 Seconds    ");
       
-      moveServoToSlot(i);
-      buzz(1, 100);
-      
-      // Wait 5 seconds, keep MQTT alive
       unsigned long startWait = millis();
       while (millis() - startWait < 5000) {
         if (!mqttClient.connected()) mqttReconnect();
         mqttClient.loop();
         delay(10);
       }
+      
+      // Turn and wait for button
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Demo: Slot " + String(i));
+      lcd.setCursor(0, 1);
+      lcd.print(" Press Button!  ");
+      
+      moveServoToSlot(i);
+      buzz(3, 100); // 3 beeps to signal taking medicine
+      
+      // Wait for button press
+      while (digitalRead(buttonPin) == HIGH) {
+        if (!mqttClient.connected()) mqttReconnect();
+        mqttClient.loop();
+        delay(10);
+      }
+      
+      // Button pressed
+      buzz(1, 50);
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("  Dose Taken!  ");
+      delay(2000);
     }
     
     lcd.clear();

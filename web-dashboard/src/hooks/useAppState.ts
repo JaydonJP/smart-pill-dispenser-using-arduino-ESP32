@@ -7,6 +7,7 @@ import {
 import {
     generateId, EMPTY_MEDICINES, INITIAL_STATUS,
 } from '../utils/helpers';
+import { supabase } from '../lib/supabase';
 
 // ─── MQTT Hook ────────────────────────────────────────────────────────
 export function useMqtt() {
@@ -45,40 +46,144 @@ export function useMqtt() {
 }
 
 // ─── App State Hook ───────────────────────────────────────────────────
-export function useAppState(lastMessage: string | null, publish: (m: string) => void) {
+export function useAppState(connected: boolean, lastMessage: string | null, publish: (m: string) => void) {
 
-    const [medicines,   setMedicines]   = useState<Medicine[]>(() => {
-        const saved = localStorage.getItem('medisync_meds');
-        return saved ? JSON.parse(saved) : EMPTY_MEDICINES;
-    });
-    const [schedules,   setSchedules]   = useState<Schedule[]>(() => {
-        const saved = localStorage.getItem('medisync_schedules');
-        return saved ? JSON.parse(saved) : [];
-    });
-    const [logs,        setLogs]        = useState<DispenseLog[]>(() => {
-        const saved = localStorage.getItem('medisync_logs');
-        return saved ? JSON.parse(saved) : [];
-    });
-    const [caregiver,   setCaregiver]   = useState<CaregiverContact>(() => {
-        const saved = localStorage.getItem('medisync_caregiver');
-        return saved ? JSON.parse(saved) : {
-            id: generateId(), name: '', email: '', phone: '', notifyEmail: true, notifySms: true,
-        };
+    const [medicines,   setMedicines]   = useState<Medicine[]>(EMPTY_MEDICINES);
+    const [schedules,   setSchedules]   = useState<Schedule[]>([]);
+    const [logs,        setLogs]        = useState<DispenseLog[]>([]);
+    const [caregiver,   setCaregiver]   = useState<CaregiverContact>({
+        id: generateId(), name: '', email: '', phone: '', notifyEmail: true, notifySms: true,
     });
     const [status, setStatus]           = useState<MachineStatus>(INITIAL_STATUS);
     const [safetyLocked, setSafetyLocked] = useState(true);
     const [cycleStarted, setCycleStarted] = useState(() => localStorage.getItem('medisync_cycle') === 'true');
     const [wizardDone, setWizardDone]   = useState(() => localStorage.getItem('medisync_wizard') === 'true');
+    const [dispatched, setDispatched]   = useState<Record<string, string>>(() => {
+        const saved = localStorage.getItem('medisync_dispatched');
+        return saved ? JSON.parse(saved) : {};
+    });
+    const [syncing, setSyncing]         = useState(false);
 
-    // ── Persist to LocalStorage ──────────────────────────────────────────
-    useEffect(() => { localStorage.setItem('medisync_meds', JSON.stringify(medicines)); }, [medicines]);
-    useEffect(() => { localStorage.setItem('medisync_schedules', JSON.stringify(schedules)); }, [schedules]);
-    useEffect(() => { localStorage.setItem('medisync_logs', JSON.stringify(logs)); }, [logs]);
-    useEffect(() => { localStorage.setItem('medisync_caregiver', JSON.stringify(caregiver)); }, [caregiver]);
+    const sendNotification = useCallback((medName: string, slot: number, notificationType: 'dispensing' | 'taken' | 'missed') => {
+        if (!caregiver.email && !caregiver.phone) return;
+        const SUPABASE_URL   = import.meta.env.VITE_SUPABASE_URL ?? '';
+        const SUPABASE_ANON  = import.meta.env.VITE_SUPABASE_ANON_KEY ?? '';
+        fetch(`${SUPABASE_URL}/functions/v1/notify-caregiver`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${SUPABASE_ANON}`,
+            },
+            body: JSON.stringify({
+                medicineName: medName,
+                slotIndex: slot,
+                scheduledAt: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+                caregiverName: caregiver.name || 'Caregiver',
+                caregiverEmail: caregiver.email,
+                caregiverPhone: caregiver.phone,
+                notifyEmail: caregiver.notifyEmail,
+                notifyWhatsapp: caregiver.notifySms,
+                notificationType: notificationType,
+            }),
+        }).catch(console.error);
+    }, [caregiver]);
+
+    // ── Initial Fetch from Supabase ──────────────────────────────────────
+    useEffect(() => {
+        async function fetchInitialData() {
+            setSyncing(true);
+            try {
+                // 1. Medicines
+                const { data: meds } = await supabase.from('medicines').select('*').order('slot_index', { ascending: true });
+                if (meds && meds.length > 0) {
+                    setMedicines(meds.map(m => ({
+                        id: m.id, slotIndex: m.slot_index, name: m.name, colorLabel: m.color_label,
+                        pillsTotal: m.pills_total, pillsRemaining: m.pills_remaining,
+                        pillsPerDose: m.pills_per_dose, enabled: m.enabled
+                    })));
+                } else {
+                    // Seed if empty
+                    await supabase.from('medicines').upsert(EMPTY_MEDICINES.map(m => ({
+                        id: m.id, slot_index: m.slotIndex, name: m.name, color_label: m.colorLabel,
+                        pills_total: m.pillsTotal, pills_remaining: m.pillsRemaining,
+                        pills_per_dose: m.pillsPerDose, enabled: m.enabled
+                    })));
+                }
+
+                // 2. Schedules
+                const { data: scheds } = await supabase.from('schedules').select('*');
+                if (scheds) {
+                    setSchedules(scheds.map(s => ({
+                        id: s.id, medicineId: s.medicine_id, doseTime: s.dose_time,
+                        frequency: s.frequency as any, enabled: s.enabled, daysOfWeek: [1,2,3,4,5,6,7]
+                    })));
+                }
+
+                // 3. Caregiver
+                const { data: contact } = await supabase.from('caregiver_contacts').select('*').limit(1).single();
+                if (contact) {
+                    setCaregiver({
+                        id: contact.id, name: contact.name, email: contact.email, phone: contact.phone,
+                        notifyEmail: contact.notify_email, notifySms: contact.notify_sms
+                    });
+                }
+                
+                // 4. Logs (last 50)
+                const { data: dbLogs } = await supabase.from('dispense_logs').select('*').order('dispensed_at', { ascending: false }).limit(50);
+                if (dbLogs) {
+                    setLogs(dbLogs.map(l => ({
+                        id: l.id, medicineId: l.medicine_id, medicineName: l.medicine_name,
+                        slotIndex: l.slot_index, scheduledAt: l.scheduled_at, dispensedAt: l.dispensed_at,
+                        status: l.status as any, pillsDispensed: l.pills_dispensed
+                    })));
+                }
+            } catch (err) {
+                console.error('Supabase fetch error:', err);
+            } finally {
+                setSyncing(false);
+            }
+        }
+        fetchInitialData();
+    }, []);
+
+    // ── Debounced Autosave to Supabase ───────────────────────────────────
+    useEffect(() => {
+        const timer = setTimeout(async () => {
+            if (wizardDone) {
+                setSyncing(true);
+                // Medicines
+                await supabase.from('medicines').upsert(medicines.map(m => ({
+                    id: m.id, slot_index: m.slotIndex, name: m.name, color_label: m.colorLabel,
+                    pills_total: m.pillsTotal, pills_remaining: m.pillsRemaining,
+                    pills_per_dose: m.pillsPerDose, enabled: m.enabled
+                })));
+                // Schedules (clear and replace or upsert)
+                // For simplicity, we just delete all and re-insert for this user (or use upsert if they have IDs)
+                if (schedules.length > 0) {
+                    await supabase.from('schedules').upsert(schedules.map(s => ({
+                        id: s.id, medicine_id: s.medicineId, dose_time: s.doseTime,
+                        frequency: s.frequency, enabled: s.enabled
+                    })));
+                }
+                // Caregiver
+                if (caregiver.name) {
+                    await supabase.from('caregiver_contacts').upsert({
+                        id: caregiver.id, name: caregiver.name, email: caregiver.email, phone: caregiver.phone,
+                        notify_email: caregiver.notifyEmail, notify_sms: caregiver.notifySms
+                    });
+                }
+                setSyncing(false);
+            }
+        }, 2000);
+        return () => clearTimeout(timer);
+    }, [medicines, schedules, caregiver, wizardDone]);
+
+    // ── Local Persistence (for UI state) ─────────────────────────────────
     useEffect(() => { localStorage.setItem('medisync_cycle', String(cycleStarted)); }, [cycleStarted]);
     useEffect(() => { localStorage.setItem('medisync_wizard', String(wizardDone)); }, [wizardDone]);
+    useEffect(() => { localStorage.setItem('medisync_dispatched', JSON.stringify(dispatched)); }, [dispatched]);
 
-    const lastDispatchedRef = useRef<Record<string, string>>({}); // scheduleId → date
+    const isConnectedRef = useRef(false);
 
     // ── MQTT message ingestion ─────────────────────────────────────────
     useEffect(() => {
@@ -96,56 +201,73 @@ export function useAppState(lastMessage: string | null, publish: (m: string) => 
             const slot = parseInt(lastMessage.split(':')[1]);
             const med = medicines.find(m => m.slotIndex === slot);
             if (med) {
-                setMedicines(prev => prev.map(m =>
+                const updatedMeds = medicines.map(m =>
                     m.slotIndex === slot
                         ? { ...m, pillsRemaining: Math.max(0, m.pillsRemaining - m.pillsPerDose) }
                         : m
-                ));
-                setLogs(prev => [{
+                );
+                setMedicines(updatedMeds);
+
+                const newLog = {
                     id: generateId(), medicineId: med.id,
                     medicineName: med.name, slotIndex: slot,
                     scheduledAt: now, dispensedAt: now,
-                    status: 'success', pillsDispensed: med.pillsPerDose,
-                }, ...prev]);
+                    status: 'success' as const, pillsDispensed: med.pillsPerDose,
+                };
+                setLogs(prev => [newLog, ...prev]);
                 setStatus(prev => ({ ...prev, lastDispensed: now }));
+
+                // Insert into Supabase
+                void supabase.from('dispense_logs').insert({
+                    id: newLog.id, medicine_id: newLog.medicineId, medicine_name: newLog.medicineName,
+                    slot_index: newLog.slotIndex, scheduled_at: newLog.scheduledAt, dispensed_at: newLog.dispensedAt,
+                    status: newLog.status, pills_dispensed: newLog.pillsDispensed
+                });
+
+                sendNotification(med.name, slot, 'taken');
             }
         } else if (lastMessage.startsWith('missed:')) {
             const slot = parseInt(lastMessage.split(':')[1]);
             const med = medicines.find(m => m.slotIndex === slot);
             if (med) {
-                // Log the missed event
-                setLogs(prev => [{
+                const newLog = {
                     id: generateId(), medicineId: med.id,
                     medicineName: med.name, slotIndex: slot,
                     scheduledAt: now, dispensedAt: now,
-                    status: 'missed', pillsDispensed: 0,
-                }, ...prev]);
+                    status: 'missed' as const, pillsDispensed: 0,
+                };
+                setLogs(prev => [newLog, ...prev]);
+
+                // Insert into Supabase
+                void supabase.from('dispense_logs').insert({
+                    id: newLog.id, medicine_id: newLog.medicineId, medicine_name: newLog.medicineName,
+                    slot_index: newLog.slotIndex, scheduled_at: newLog.scheduledAt, dispensed_at: newLog.dispensedAt,
+                    status: newLog.status, pills_dispensed: newLog.pillsDispensed
+                });
 
                 // Fire caregiver alert via Supabase Edge Function
-                if (caregiver.email || caregiver.phone) {
-                    const SUPABASE_URL   = import.meta.env.VITE_SUPABASE_URL ?? '';
-                    const SUPABASE_ANON  = import.meta.env.VITE_SUPABASE_ANON_KEY ?? '';
-                    fetch(`${SUPABASE_URL}/functions/v1/notify-caregiver`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${SUPABASE_ANON}`,
-                        },
-                        body: JSON.stringify({
-                            medicineName: med.name,
-                            slotIndex: slot,
-                            scheduledAt: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-                            caregiverName: caregiver.name || 'Caregiver',
-                            caregiverEmail: caregiver.email,
-                            caregiverPhone: caregiver.phone,
-                            notifyEmail: caregiver.notifyEmail,
-                            notifyWhatsapp: caregiver.notifySms, // notifySms field now controls WhatsApp
-                        }),
-                    }).catch(console.error);
-                }
+                sendNotification(med.name, slot, 'missed');
             }
         }
-    }, [lastMessage]);
+    }, [lastMessage, sendNotification]);
+
+    // ── MQTT Auto-Resync on Connect ───────────────────────────────────
+    useEffect(() => {
+        // When we connect (or reconnect), if the cycle is started, tell the ESP32.
+        // This handles cases where the ESP32 reboots while the dashboard is open.
+        if (connected && cycleStarted) {
+            console.log('[RE-SYNC] Sending start_cycle to ESP32');
+            publish('start_cycle');
+            // Immediate sync of next dose
+            const now = new Date();
+            const hhMM = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
+            const today = now.toISOString().split('T')[0];
+            const enabled = schedules.filter(s => s.enabled).sort((a,b) => a.doseTime.localeCompare(b.doseTime));
+            const availableToday = enabled.filter(s => dispatched[`${s.id}-${today}`] !== today);
+            const nextTime = availableToday.find(s => s.doseTime >= hhMM)?.doseTime ?? availableToday[0]?.doseTime ?? '--:--';
+            publish(`next_dose:${nextTime}`);
+        }
+    }, [connected, cycleStarted]); // Only trigger on connect/start events
 
     // ── Offline watcher (12s no heartbeat) ────────────────────────────
     useEffect(() => {
@@ -171,7 +293,7 @@ export function useAppState(lastMessage: string | null, publish: (m: string) => 
             const enabled = schedules.filter(s => s.enabled).sort((a, b) => a.doseTime.localeCompare(b.doseTime));
             
             // 1. Sync next dose to LCD
-            const availableToday = enabled.filter(s => !lastDispatchedRef.current[`${s.id}-${today}`]);
+            const availableToday = enabled.filter(s => dispatched[`${s.id}-${today}`] !== today);
             const nextTime = availableToday.find(s => s.doseTime >= hhMM)?.doseTime ?? availableToday[0]?.doseTime ?? '--:--';
             publish(`next_dose:${nextTime}`);
 
@@ -179,15 +301,18 @@ export function useAppState(lastMessage: string | null, publish: (m: string) => 
             schedules.forEach(s => {
                 if (!s.enabled || s.doseTime !== hhMM) return;
                 const key = `${s.id}-${today}`;
-                if (lastDispatchedRef.current[key]) return;
+                if (dispatched[key] === today) return;
                 const med = medicines.find(m => m.id === s.medicineId && m.enabled && m.pillsRemaining > 0);
                 if (!med) return;
-                lastDispatchedRef.current[key] = today;
+                
+                console.log(`[SCHEDULER] Triggering dispense for ${med.name} at ${hhMM}`);
+                setDispatched(prev => ({ ...prev, [key]: today }));
+                sendNotification(med.name, med.slotIndex, 'dispensing');
                 publish(`dispense:${med.slotIndex}`);
             });
         }, 10000); // Check every 10s
         return () => clearInterval(timer);
-    }, [cycleStarted, schedules, medicines, publish]);
+    }, [cycleStarted, schedules, medicines, publish, dispatched, sendNotification]);
 
     // ── Emergency/Quick Eject ─────────────────────────────────────────
     const quickEject = useCallback(() => {
@@ -198,7 +323,7 @@ export function useAppState(lastMessage: string | null, publish: (m: string) => 
             .sort((a, b) => a.doseTime.localeCompare(b.doseTime));
         
         // Find the first schedule that HAS NOT been dispatched today and is chronologically next
-        const availableToday = enabled.filter(s => !lastDispatchedRef.current[`${s.id}-${today}`]);
+        const availableToday = enabled.filter(s => dispatched[`${s.id}-${today}`] !== today);
         const next = availableToday.find(s => s.doseTime >= hhMM) ?? availableToday[0];
         
         if (!next) return;
@@ -206,14 +331,15 @@ export function useAppState(lastMessage: string | null, publish: (m: string) => 
         if (!med) return;
         
         // Mark as taken so next eject picks the next one
-        lastDispatchedRef.current[`${next.id}-${today}`] = today; 
+        setDispatched(prev => ({ ...prev, [`${next.id}-${today}`]: today }));
+        sendNotification(med.name, med.slotIndex, 'dispensing');
         publish(`dispense:${med.slotIndex}`);
         
         // Push updated next dose immediately
         const newAvailable = availableToday.filter(s => s.id !== next.id);
         const nextTime = newAvailable.find(s => s.doseTime >= hhMM)?.doseTime ?? newAvailable[0]?.doseTime ?? '--:--';
         publish(`next_dose:${nextTime}`);
-    }, [schedules, medicines, publish]);
+    }, [schedules, medicines, publish, dispatched, sendNotification]);
 
     return {
         medicines, setMedicines,
@@ -224,6 +350,7 @@ export function useAppState(lastMessage: string | null, publish: (m: string) => 
         safetyLocked, setSafetyLocked,
         cycleStarted, setCycleStarted,
         wizardDone, setWizardDone,
+        syncing,
         quickEject,
     };
 }

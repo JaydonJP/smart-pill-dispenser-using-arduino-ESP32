@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronRight, ChevronLeft, CheckCircle2, Pill, Clock, UserRound, Play } from 'lucide-react';
+import { ChevronRight, ChevronLeft, CheckCircle2, Pill, Clock, UserRound, Play, Sparkles } from 'lucide-react';
 import { Medicine, Schedule, CaregiverContact, SLOT_COLORS, COLOR_MAP } from '../types';
 import { generateId, formatTime, weeklyPillCount } from '../utils/helpers';
 import { PrescriptionUpload } from './PrescriptionUpload';
@@ -87,14 +87,18 @@ export const SetupWizard: React.FC<Props> = ({
                     {step === 'slots' && (
                         <>
                             <div className="mb-8">
+                                <div className="flex items-center gap-2 mb-4">
+                                    <Sparkles className="w-5 h-5 text-teal-400" />
+                                    <h2 className="text-lg font-bold text-white">Quick Start: AI Prescription</h2>
+                                </div>
                                 <PrescriptionUpload 
                                     medicines={medicines} setMedicines={setMedicines} 
                                     schedules={schedules} setSchedules={setSchedules} 
                                 />
                             </div>
                             
-                            <h2 className="heading-section mb-1"><Pill className="w-4 h-4 text-teal-400" /> Manual Slot Entry (Optional)</h2>
-                            <p className="text-xs text-surface-400 mb-5">Enable a slot, then enter the medicine name and quantity. The AI will auto-fill these for you if you uploaded a prescription above.</p>
+                            <h2 className="heading-section mb-1 font-bold text-white"><Pill className="w-4 h-4 text-teal-400" /> Manual Slot Entry (Optional)</h2>
+                            <p className="text-xs text-surface-400 mb-5 italic">Or refine the medicines extracted by AI below...</p>
                             <div className="space-y-3">
                                 {medicines.map((med, i) => (
                                     <div key={med.id} className={`rounded-xl border p-4 transition-all ${med.enabled ? 'border-teal-500/30 bg-teal-500/5' : 'border-navy-600/25 bg-navy-800/30'}`}>

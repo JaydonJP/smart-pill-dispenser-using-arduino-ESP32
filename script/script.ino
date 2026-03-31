@@ -221,9 +221,25 @@ void setup() {
   setup_wifi();
   
   // Configure Time (IST is UTC+5:30)
-  configTime(19800, 0, "pool.ntp.org", "time.nist.gov"); 
+  // POSIX TZ format: IST-5:30 means +5:30 from UTC
+  lcd.clear();
+  lcd.print("Syncing Time...");
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov"); 
   setenv("TZ", "IST-5:30", 1);
   tzset();
+
+  // Wait for time to sync (max 10s)
+  struct tm timeinfo;
+  int retry = 0;
+  while (!getLocalTime(&timeinfo) && retry < 20) {
+    delay(500);
+    Serial.print(".");
+    retry++;
+  }
+  lcd.clear();
+  if (retry < 20) lcd.print("Time Synced!");
+  else lcd.print("Time Sync Fail");
+  delay(1000);
 
   mqttClient.setServer(mqtt_server, 1883);
   mqttClient.setCallback(mqttCallback);

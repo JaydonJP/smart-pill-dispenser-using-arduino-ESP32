@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pill, Radio, Heart } from 'lucide-react';
+import { Pill, Radio, Heart, Cloud, Loader2 } from 'lucide-react';
 import { useMqtt, useAppState } from './hooks/useAppState';
 import { SetupWizard } from './components/SetupWizard';
 import { StatusPanel } from './components/StatusPanel';
@@ -11,7 +11,7 @@ import { PrescriptionUpload } from './components/PrescriptionUpload';
 
 const App: React.FC = () => {
     const mqtt = useMqtt();
-    const state = useAppState(mqtt.lastMessage, mqtt.publish);
+    const state = useAppState(mqtt.connected, mqtt.lastMessage, mqtt.publish);
 
     // ── Refill handler ────────────────────────────────────────────────
     const handleRefill = (id: string, total: number) => {
@@ -88,6 +88,14 @@ const App: React.FC = () => {
                                 className="px-3 py-1.5 rounded-lg bg-indigo-500/20 border border-indigo-500/40 text-indigo-400 text-xs font-bold hover:bg-indigo-500/30 transition-all">
                                 🚀 DEMO MODE
                             </button>
+
+                            {/* Supabase Sync Indicator */}
+                            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-all ${state.syncing ? 'bg-teal-500/10 border-teal-500/30 text-teal-400' : 'bg-navy-800/50 border-navy-600/25 text-surface-600'}`}>
+                                {state.syncing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Cloud className="w-3 h-3" />}
+                                <span className="text-[10px] font-bold uppercase tracking-wider">
+                                    {state.syncing ? 'Syncing...' : 'Cloud'}
+                                </span>
+                            </div>
 
                             {/* MQTT Indicator */}
                             <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-navy-800/50 border border-navy-600/25">

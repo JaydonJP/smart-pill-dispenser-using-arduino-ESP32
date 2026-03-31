@@ -16,13 +16,14 @@ const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY ?? '';
 
 async function parsePrescription(base64Image: string, mimeType: string): Promise<{ name: string; times: string[]; frequency: string }[]> {
     const prompt = `You are a medical assistant. Analyze this prescription image and extract all medicines.
+The dispenser has exactly 4 available slots for medications.
 Return ONLY a valid JSON array, no markdown, no explanation. Format:
 [{"name":"Medicine Name","times":["08:00","20:00"],"frequency":"twice_daily"}]
 Frequency options: "daily", "twice_daily", "weekly".
 If a time is unclear, use a sensible default (morning=08:00, noon=12:00, evening=18:00, night=21:00).`;
 
     const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -62,16 +63,38 @@ export const PrescriptionUpload: React.FC<Props> = ({ medicines, setMedicines, s
         const newScheds = [...schedules];
 
         parsedResults.forEach((r, i) => {
-            const slot = empty[i];
-            if (!slot) return; // No more empty slots
-            const slotIdx = updated.findIndex(m => m.id === slot.id);
-            updated[slotIdx] = { ...slot, name: r.name || 'Unknown', enabled: true, pillsRemaining: 10, pillsTotal: 10 };
+            // Find a slot: either disabled or enabled but empty
+            const slotIdx = updated.findIndex((m, idx) => (!m.enabled || !m.name) && !parsedResults.slice(0, i).some((_, prevIdx) => {
+                // Ensure we don't pick the same slot twice in this loop
+                // This is a bit complex, let's simplify: just take the i-th available slot
+                return false; 
+            }));
+            
+            // Simpler approach: find all available slots first
+            const availableSlots = updated.filter(m => !m.enabled || (m.name === '' || m.name === 'Unknown'));
+            const slot = availableSlots[i];
+            
+            if (!slot) return;
+            const targetIdx = updated.findIndex(m => m.id === slot.id);
+            
+            updated[targetIdx] = { 
+                ...slot, 
+                name: r.name || 'Unknown', 
+                enabled: true, 
+                pillsRemaining: 10, 
+                pillsTotal: 10,
+                pillsPerDose: 1
+            };
+
             const times = Array.isArray(r.times) ? r.times : ['08:00'];
-            times.forEach(t => {
+            times.forEach((t: string) => {
                 newScheds.push({
-                    id: generateId(), medicineId: slot.id,
-                    doseTime: typeof t === 'string' ? t : '08:00', frequency: r.frequency as Schedule['frequency'] || 'daily',
-                    daysOfWeek: [1,2,3,4,5,6,7], enabled: true,
+                    id: generateId(), 
+                    medicineId: slot.id,
+                    doseTime: typeof t === 'string' ? t : '08:00', 
+                    frequency: r.frequency as Schedule['frequency'] || 'daily',
+                    daysOfWeek: [1,2,3,4,5,6,7], 
+                    enabled: true,
                 });
             });
         });

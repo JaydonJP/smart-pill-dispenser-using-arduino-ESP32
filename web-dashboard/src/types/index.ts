@@ -1,9 +1,9 @@
 // ─── Core Domain Types ───────────────────────────────────────────────
 
-/** One of the 7 physical medicine compartments on the dispenser wheel */
+/** One of the 4 physical medicine compartments on the dispenser wheel */
 export interface Medicine {
     id: string;
-    slotIndex: number;       // 1–7 (physical slot on the wheel)
+    slotIndex: number;       // 1–4 (physical slot on the wheel)
     name: string;
     colorLabel: string;      // Color of the compartment e.g. "Red"
     pillsTotal: number;
@@ -62,7 +62,7 @@ export type WizardStep = 'slots' | 'schedule' | 'caregiver' | 'done';
 
 // ─── Slot Color Options ───────────────────────────────────────────────
 export const SLOT_COLORS = [
-    'Red', 'Blue', 'Green', 'Yellow', 'Orange', 'Purple', 'White'
+    'Red', 'Blue', 'Green', 'Yellow'
 ] as const;
 export type SlotColor = typeof SLOT_COLORS[number];
 
@@ -71,7 +71,4 @@ export const COLOR_MAP: Record<SlotColor, string> = {
     Blue:   '#3b82f6',
     Green:  '#22c55e',
     Yellow: '#eab308',
-    Orange: '#f97316',
-    Purple: '#a855f7',
-    White:  '#e5e7eb',
 };

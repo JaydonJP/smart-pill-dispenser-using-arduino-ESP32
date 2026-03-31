@@ -62,11 +62,11 @@ export const getNextDoseTime = (schedules: Schedule[]): string => {
 
 // ─── Initial State ────────────────────────────────────────────────────
 
-export const EMPTY_MEDICINES: Medicine[] = Array.from({ length: 7 }, (_, i) => ({
+export const EMPTY_MEDICINES: Medicine[] = Array.from({ length: 4 }, (_, i) => ({
     id: generateId(),
     slotIndex: i + 1,
     name: '',
-    colorLabel: ['Red','Blue','Green','Yellow','Orange','Purple','White'][i],
+    colorLabel: ['Red','Blue','Green','Yellow'][i],
     pillsTotal: 0,
     pillsRemaining: 0,
     pillsPerDose: 1,
@@ -82,4 +82,4 @@ export const INITIAL_STATUS: MachineStatus = {
     cycleStarted: false,
 };
 
-export const SLOT_COLORS_LIST = ['Red','Blue','Green','Yellow','Orange','Purple','White'];
+export const SLOT_COLORS_LIST = ['Red','Blue','Green','Yellow'];

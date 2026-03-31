@@ -1,11 +1,11 @@
 /*
   Smart Pill Dispenser — ESP32-S3 Firmware v3.0
   Architecture: Dashboard Mastermind
-  Hardware: 8-compartment wheel (1 dispense slot, 7 medicine slots)
+  Hardware: 5-compartment wheel (1 dispense slot, 4 medicine slots)
   
   Slot Map:
     Position 0 = Dispense opening (empty, always aligned at start)
-    Position 1-7 = Medicine slots (each 45° apart)
+    Position 1-4 = Medicine slots (each 45° apart)
   
   Commands received via MQTT (dispenser/command):
     "start_cycle"   — Begin operation, show clock
@@ -40,10 +40,10 @@ const int ledPin     = 19;
 const int buzzerPin  = 21;
 
 // ─── Slot / Servo Config ─────────────────────────────────────────────
-// 8 compartments = 45° per step
-// Slot 0 is the dispense opening. Slots 1-7 hold medicines.
+// 5 compartments = 45° per step
+// Slot 0 is the dispense opening. Slots 1-4 hold medicines.
 // To dispense slot N, we rotate N * 45° from home position.
-const int TOTAL_SLOTS     = 8;
+const int TOTAL_SLOTS     = 5;
 const int DEG_PER_SLOT    = 45;
 int currentPosition       = 0; // Which physical slot is at dispense opening (0 = empty)
 
@@ -145,7 +145,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   // dispense:N — rotate to slot N and trigger dispense
   else if (msg.startsWith("dispense:")) {
     int slot = msg.substring(9).toInt();
-    if (slot < 1 || slot > 7) return;
+    if (slot < 1 || slot > 4) return;
 
     Serial.println("Dispensing slot " + String(slot));
     moveServoToSlot(slot);

@@ -376,14 +376,14 @@ void loop() {
         mqttClient.loop();
         
         // Every 3 seconds, fire a beep
-        if (millis() - lastDemoBeep >= 3000 && beepCount < 2) {
+        if (millis() - lastDemoBeep >= 3000 && beepCount < 4) {
           lastDemoBeep = millis();
           buzz(1, 100);
           beepCount++;
         }
         
-        // If we fired 2 beeps and they still didn't press, send the emergency notification
-        if (beepCount == 2 && !alertSent) {
+        // If we fired 4 beeps and they still didn't press, send the emergency notification
+        if (beepCount == 4 && !alertSent) {
           String missedMsg = "missed:" + String(i);
           mqttClient.publish("dispenser/status", missedMsg.c_str());
           Serial.println("Demo timeout: Sent emergency missed alert for slot " + String(i));

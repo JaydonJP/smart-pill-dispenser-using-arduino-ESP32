@@ -40,7 +40,7 @@ export function useMqtt() {
         publish,
         startCycle:      () => publish('start_cycle'),
         startDemo:       () => publish('start_demo'),
-        dispenseSlot:    (n: number) => publish(`dispense:${n}`),
+        dispenseSlot:    (n: number, d: number = 1) => publish(`dispense:${n}:${d}`),
         sendLcd:         (l1: string, l2: string) => publish(`lcd:${l1}|${l2}`),
     };
 }
@@ -322,7 +322,7 @@ export function useAppState(connected: boolean, lastMessage: string | null, publ
                 console.log(`[SCHEDULER] Triggering dispense for ${med.name} at ${hhMM} (Freq: ${s.frequency})`);
                 setDispatched(prev => ({ ...prev, [key]: today }));
                 sendNotification(med.name, med.slotIndex, 'dispensing', hhMM);
-                publish(`dispense:${med.slotIndex}`);
+                publish(`dispense:${med.slotIndex}:${med.pillsPerDose}`);
             });
         }, 10000); // Check every 10s
         return () => clearInterval(timer);
@@ -347,7 +347,7 @@ export function useAppState(connected: boolean, lastMessage: string | null, publ
         // Mark as taken so next eject picks the next one
         setDispatched(prev => ({ ...prev, [`${next.id}-${today}`]: today }));
         sendNotification(med.name, med.slotIndex, 'dispensing', next.doseTime);
-        publish(`dispense:${med.slotIndex}`);
+        publish(`dispense:${med.slotIndex}:${med.pillsPerDose}`);
         
         // Push updated next dose immediately
         const newAvailable = availableToday.filter(s => s.id !== next.id);

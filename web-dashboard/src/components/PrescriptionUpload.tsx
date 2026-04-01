@@ -1,7 +1,8 @@
 import React, { useState, useCallback } from 'react';
-import { FileImage, Sparkles, Upload, X, CheckCircle2, Loader } from 'lucide-react';
+import { FileImage, Sparkles, Upload, X, CheckCircle2, Loader, Trash2, AlertTriangle } from 'lucide-react';
 import { Medicine, Schedule } from '../types';
 import { generateId } from '../utils/helpers';
+import { supabase } from '../lib/supabase';
 
 interface Props {
     medicines: Medicine[];
@@ -59,9 +60,72 @@ export const PrescriptionUpload: React.FC<Props> = ({ medicines, setMedicines, s
     const [error, setError] = useState<string | null>(null);
     const [applied, setApplied] = useState(false);
 
-    const applyToScheduleParams = (parsedResults: any[]) => {
-        const updated = [...medicines];
-        const newScheds = [...schedules];
+    // Clear data state
+    const [clearing, setClearing] = useState(false);
+    const [confirmClear, setConfirmClear] = useState(false);
+    const [clearSuccess, setClearSuccess] = useState(false);
+
+    // ── Clear all medicines & schedules from Supabase ────────────────────
+    const handleClearData = async () => {
+        if (!confirmClear) {
+            // First click: show confirmation prompt
+            setConfirmClear(true);
+            setClearSuccess(false);
+            return;
+        }
+
+        // Second click: actually clear
+        setClearing(true);
+        setError(null);
+        setConfirmClear(false);
+        try {
+            // 1. Delete all schedules
+            await supabase.from('schedules').delete().not('id', 'is', null);
+
+            // 2. Reset all medicine slots to empty/disabled (keep the slot rows, just blank them)
+            const resetMeds: Medicine[] = medicines.map(m => ({
+                ...m,
+                name: '',
+                enabled: false,
+                pillsTotal: 0,
+                pillsRemaining: 0,
+                pillsPerDose: 1,
+            }));
+            await supabase.from('medicines').upsert(
+                resetMeds.map(m => ({
+                    id: m.id,
+                    slot_index: m.slotIndex,
+                    name: m.name,
+                    color_label: m.colorLabel,
+                    pills_total: m.pillsTotal,
+                    pills_remaining: m.pillsRemaining,
+                    pills_per_dose: m.pillsPerDose,
+                    enabled: m.enabled,
+                }))
+            );
+
+            // 3. Update local state
+            setMedicines(resetMeds);
+            setSchedules([]);
+
+            // 4. Reset the upload panel too
+            setPreview(null);
+            setFile(null);
+            setResults([]);
+            setApplied(false);
+            setClearSuccess(true);
+            setTimeout(() => setClearSuccess(false), 3000);
+        } catch (e: any) {
+            setError(e.message || 'Failed to clear data. Please try again.');
+        } finally {
+            setClearing(false);
+        }
+    };
+
+    const applyToScheduleParams = (parsedResults: any[], currentMedicines: Medicine[], currentSchedules: Schedule[]) => {
+        const updated = [...currentMedicines];
+        // Start fresh — don't append to existing schedules (they were just cleared)
+        const newScheds: Schedule[] = [];
 
         // Capture available (empty/disabled) slots ONCE before the loop so that
         // each medicine gets a unique, correctly-ordered slot.
@@ -101,7 +165,7 @@ export const PrescriptionUpload: React.FC<Props> = ({ medicines, setMedicines, s
         setApplied(true);
     };
 
-    const analyze = async (base64Str: string, mimeType: string) => {
+    const analyze = async (base64Str: string, mimeType: string, currentMedicines: Medicine[], currentSchedules: Schedule[]) => {
         if (!GEMINI_API_KEY) {
             setError('Set VITE_GEMINI_API_KEY in your .env file to enable AI parsing.');
             return;
@@ -115,7 +179,7 @@ export const PrescriptionUpload: React.FC<Props> = ({ medicines, setMedicines, s
                 setError('No medicines found in image or invalid format.');
             } else {
                 setResults(parsed);
-                applyToScheduleParams(parsed);
+                applyToScheduleParams(parsed, currentMedicines, currentSchedules);
             }
         } catch (e: any) {
             setError(e.message || 'Could not parse the prescription. Try a clearer image.');
@@ -129,14 +193,16 @@ export const PrescriptionUpload: React.FC<Props> = ({ medicines, setMedicines, s
         setResults([]);
         setApplied(false);
         setError(null);
+        setClearSuccess(false);
         const reader = new FileReader();
         reader.onload = e => {
             const resultStr = e.target?.result as string;
             setPreview(resultStr);
-            analyze(resultStr, f.type);
+            // Pass current medicines/schedules directly to avoid stale closure
+            analyze(resultStr, f.type, medicines, schedules);
         };
         reader.readAsDataURL(f);
-    }, [medicines, schedules]); // adding dependencies so analyze uses latest state
+    }, [medicines, schedules]);
 
     const handleDrop = useCallback((e: React.DragEvent) => {
         e.preventDefault();
@@ -145,9 +211,49 @@ export const PrescriptionUpload: React.FC<Props> = ({ medicines, setMedicines, s
 
     return (
         <div className="card p-5">
-            <h2 className="heading-section mb-1">
-                <Sparkles className="w-4 h-4 text-teal-400" /> AI Prescription Reader
-            </h2>
+            {/* Header row with title + Clear button */}
+            <div className="flex items-center justify-between mb-1">
+                <h2 className="heading-section">
+                    <Sparkles className="w-4 h-4 text-teal-400" /> AI Prescription Reader
+                </h2>
+
+                {/* Clear Data Button */}
+                <button
+                    onClick={handleClearData}
+                    disabled={clearing}
+                    title="Clear all medicines and schedules from the database"
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border ${
+                        confirmClear
+                            ? 'bg-red-500/20 border-red-500/60 text-red-400 hover:bg-red-500/30 animate-pulse'
+                            : 'bg-navy-800/60 border-red-500/20 text-red-400/70 hover:bg-red-500/10 hover:border-red-500/40 hover:text-red-400'
+                    }`}
+                >
+                    {clearing ? (
+                        <Loader className="w-3 h-3 animate-spin" />
+                    ) : confirmClear ? (
+                        <AlertTriangle className="w-3 h-3" />
+                    ) : (
+                        <Trash2 className="w-3 h-3" />
+                    )}
+                    {clearing ? 'Clearing…' : confirmClear ? 'Confirm Clear?' : 'Clear Data'}
+                </button>
+            </div>
+
+            {/* Cancel confirm on click-away */}
+            {confirmClear && (
+                <p className="text-[10px] text-red-400/70 mb-2">
+                    This will erase <span className="font-bold text-red-400">all medicines &amp; schedules</span> from the database.
+                    Click <span className="font-bold">Confirm Clear?</span> again to proceed, or{' '}
+                    <button className="underline hover:text-red-300" onClick={() => setConfirmClear(false)}>cancel</button>.
+                </p>
+            )}
+
+            {clearSuccess && (
+                <p className="text-[11px] text-emerald-400 mb-2 flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3" /> Database cleared successfully.
+                </p>
+            )}
+
             <p className="text-xs text-surface-400 mb-5">
                 Upload a photo of your doctor's prescription. Gemini Vision AI will automatically extract medicines,
                 dosages, and timings and populate your schedule.
@@ -160,7 +266,7 @@ export const PrescriptionUpload: React.FC<Props> = ({ medicines, setMedicines, s
                     onDragOver={e => e.preventDefault()}
                     className="flex flex-col items-center justify-center gap-3 w-full h-40 border-2 border-dashed border-navy-600/40 rounded-2xl cursor-pointer hover:border-teal-500/40 hover:bg-teal-500/5 transition-all">
                     <Upload className="w-8 h-8 text-surface-500" />
-                    <p className="text-xs text-surface-400">Drag & drop or <span className="text-teal-400">browse</span></p>
+                    <p className="text-xs text-surface-400">Drag &amp; drop or <span className="text-teal-400">browse</span></p>
                     <p className="text-[10px] text-surface-600">JPG, PNG, PDF (photo preferred)</p>
                     <input type="file" accept="image/*" hidden onChange={e => {
                         if (e.target.files?.[0]) handleFile(e.target.files[0]);

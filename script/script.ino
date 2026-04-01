@@ -50,6 +50,7 @@ int currentPosition       = 0; // Which physical slot is at dispense opening (0 
 // ─── Acknowledgment State ─────────────────────────────────────────────
 bool waitingForAck        = false;
 int  ackSlot              = -1;
+int  ackDosage            = 1;
 unsigned long dispenseTime = 0;
 const unsigned long MISSED_TIMEOUT = 300000UL; // 5 minutes
 const unsigned long ALERT_INTERVAL = 10000UL;  // 10 seconds
@@ -142,25 +143,37 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     startDemoTriggered = true;
   }
 
-  // dispense:N — rotate to slot N and trigger dispense
+  // dispense:N:D — rotate to slot N and trigger dispense with dosage D
   else if (msg.startsWith("dispense:")) {
-    int slot = msg.substring(9).toInt();
+    int firstColon = msg.indexOf(':');
+    int secondColon = msg.indexOf(':', firstColon + 1);
+    
+    int slot = -1;
+    int dosage = 1;
+    if (secondColon != -1) {
+      slot = msg.substring(firstColon + 1, secondColon).toInt();
+      dosage = msg.substring(secondColon + 1).toInt();
+    } else {
+      slot = msg.substring(firstColon + 1).toInt();
+    }
+
     if (slot < 1 || slot > 4) return;
 
-    Serial.println("Dispensing slot " + String(slot));
+    Serial.println("Dispensing slot " + String(slot) + " dosage " + String(dosage));
     moveServoToSlot(slot);
     
     // Alert the patient
     buzz(3);
     lcd.clear();
     lcd.setCursor(0, 0);
-    lcd.print("Take Medicine!");
+    lcd.print("Take " + String(dosage) + " Pill(s)!");
     lcd.setCursor(0, 1);
     lcd.print("Slot " + String(slot) + " - Press btn");
     
     // Start acknowledgment tracking
     waitingForAck = true;
     ackSlot = slot;
+    ackDosage = dosage;
     dispenseTime = millis();
     lastAlertTime = millis();
     
@@ -274,6 +287,7 @@ void loop() {
       buzz(1, 50); // One short happy beep
       delay(2000);
       lcd.clear();
+      moveServoToSlot(0);
       return;
     }
     
@@ -289,6 +303,7 @@ void loop() {
       lcd.print("  Dose Missed  ");
       delay(2000);
       lcd.clear();
+      moveServoToSlot(0);
       return;
     }
 
@@ -304,7 +319,7 @@ void loop() {
       buzz(interval == 2000 ? 5 : (interval == 5000 ? 3 : 2), 100); // Faster = more beeps
       // Refresh the LCD reminder
       lcd.setCursor(0, 0);
-      lcd.print("Take Medicine!  ");
+      lcd.print("Take " + String(ackDosage) + " Pill(s)!   ");
       lcd.setCursor(0, 1);
       lcd.print("Press button!   ");
     }
@@ -350,19 +365,50 @@ void loop() {
       moveServoToSlot(i);
       buzz(3, 100); // 3 beeps to signal taking medicine
       
-      // Wait for button press
+      // Wait for button press, simulate emergency timeout
+      unsigned long demoWaitStart = millis();
+      unsigned long lastDemoBeep = millis();
+      int beepCount = 0;
+      bool alertSent = false;
+      
       while (digitalRead(buttonPin) == HIGH) {
         if (!mqttClient.connected()) mqttReconnect();
         mqttClient.loop();
+        
+        // Every 3 seconds, fire a beep
+        if (millis() - lastDemoBeep >= 3000 && beepCount < 2) {
+          lastDemoBeep = millis();
+          buzz(1, 100);
+          beepCount++;
+        }
+        
+        // If we fired 2 beeps and they still didn't press, send the emergency notification
+        if (beepCount == 2 && !alertSent) {
+          String missedMsg = "missed:" + String(i);
+          mqttClient.publish("dispenser/status", missedMsg.c_str());
+          Serial.println("Demo timeout: Sent emergency missed alert for slot " + String(i));
+          
+          lcd.clear();
+          lcd.setCursor(0, 0);
+          lcd.print(" Emergency Sent ");
+          delay(1000);
+          
+          alertSent = true;
+          // We can break here to move onto the next demo slot immediately
+          break;
+        }
+        
         delay(10);
       }
       
-      // Button pressed
-      buzz(1, 50);
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("  Dose Taken!  ");
-      delay(2000);
+      if (!alertSent) {
+        // Button pressed on time
+        buzz(1, 50);
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("  Dose Taken!  ");
+        delay(2000);
+      }
     }
     
     lcd.clear();

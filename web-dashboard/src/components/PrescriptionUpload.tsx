@@ -28,10 +28,12 @@ If a time is unclear, use a sensible default (morning=08:00, noon=12:00, evening
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                contents: [{ parts: [
-                    { text: prompt },
-                    { inline_data: { mime_type: mimeType || 'image/jpeg', data: base64Image } },
-                ]}],
+                contents: [{
+                    parts: [
+                        { text: prompt },
+                        { inline_data: { mime_type: mimeType || 'image/jpeg', data: base64Image } },
+                    ]
+                }],
                 generationConfig: { temperature: 0.1, maxOutputTokens: 512 },
             }),
         }
@@ -58,30 +60,26 @@ export const PrescriptionUpload: React.FC<Props> = ({ medicines, setMedicines, s
     const [applied, setApplied] = useState(false);
 
     const applyToScheduleParams = (parsedResults: any[]) => {
-        const empty = medicines.filter(m => !m.enabled);
         const updated = [...medicines];
         const newScheds = [...schedules];
 
+        // Capture available (empty/disabled) slots ONCE before the loop so that
+        // each medicine gets a unique, correctly-ordered slot.
+        const availableSlots = updated.filter(
+            m => !m.enabled || m.name === '' || m.name === 'Unknown'
+        );
+
         parsedResults.forEach((r, i) => {
-            // Find a slot: either disabled or enabled but empty
-            const slotIdx = updated.findIndex((m, idx) => (!m.enabled || !m.name) && !parsedResults.slice(0, i).some((_, prevIdx) => {
-                // Ensure we don't pick the same slot twice in this loop
-                // This is a bit complex, let's simplify: just take the i-th available slot
-                return false; 
-            }));
-            
-            // Simpler approach: find all available slots first
-            const availableSlots = updated.filter(m => !m.enabled || (m.name === '' || m.name === 'Unknown'));
             const slot = availableSlots[i];
-            
+
             if (!slot) return;
             const targetIdx = updated.findIndex(m => m.id === slot.id);
-            
-            updated[targetIdx] = { 
-                ...slot, 
-                name: r.name || 'Unknown', 
-                enabled: true, 
-                pillsRemaining: 10, 
+
+            updated[targetIdx] = {
+                ...slot,
+                name: r.name || 'Unknown',
+                enabled: true,
+                pillsRemaining: 10,
                 pillsTotal: 10,
                 pillsPerDose: 1
             };
@@ -89,11 +87,11 @@ export const PrescriptionUpload: React.FC<Props> = ({ medicines, setMedicines, s
             const times = Array.isArray(r.times) ? r.times : ['08:00'];
             times.forEach((t: string) => {
                 newScheds.push({
-                    id: generateId(), 
+                    id: generateId(),
                     medicineId: slot.id,
-                    doseTime: typeof t === 'string' ? t : '08:00', 
+                    doseTime: typeof t === 'string' ? t : '08:00',
                     frequency: r.frequency as Schedule['frequency'] || 'daily',
-                    daysOfWeek: [1,2,3,4,5,6,7], 
+                    daysOfWeek: [1, 2, 3, 4, 5, 6, 7],
                     enabled: true,
                 });
             });
@@ -172,7 +170,7 @@ export const PrescriptionUpload: React.FC<Props> = ({ medicines, setMedicines, s
             ) : (
                 <div className="relative mb-4">
                     <img src={preview} alt="Prescription" className={`w-full h-48 object-cover rounded-xl border border-navy-600/25 ${loading ? 'opacity-50 blur-sm' : ''} transition-all`} />
-                    
+
                     {loading && (
                         <div className="absolute inset-0 flex flex-col items-center justify-center bg-navy-950/40 rounded-xl">
                             <Loader className="w-8 h-8 text-teal-400 animate-spin mb-2" />
@@ -193,7 +191,7 @@ export const PrescriptionUpload: React.FC<Props> = ({ medicines, setMedicines, s
             {/* Parsed Results */}
             {results.length > 0 && applied && (
                 <div className="mt-4 space-y-2">
-                    <p className="text-label text-teal-400 flex items-center gap-2"><CheckCircle2 className="w-4 h-4"/> Schedule Auto-Updated</p>
+                    <p className="text-label text-teal-400 flex items-center gap-2"><CheckCircle2 className="w-4 h-4" /> Schedule Auto-Updated</p>
                     {results.map((r, i) => (
                         <div key={i} className="flex items-center justify-between px-3 py-2 bg-navy-800/60 border border-teal-500/20 rounded-xl">
                             <div>

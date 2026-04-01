@@ -20,6 +20,7 @@ const STEP_LABELS = ['Assign Slots', 'Set Schedule', 'Caregiver'];
 const FREQ_OPTIONS = [
     { value: 'daily', label: 'Once Daily' },
     { value: 'twice_daily', label: 'Twice Daily' },
+    { value: 'every_other_day', label: 'Every Other Day' },
     { value: 'weekly', label: 'Weekly' },
 ];
 
@@ -185,7 +186,7 @@ export const SetupWizard: React.FC<Props> = ({
                     {step === 'caregiver' && (
                         <>
                             <h2 className="heading-section mb-1"><UserRound className="w-4 h-4 text-teal-400" /> Caregiver Alerts</h2>
-                            <p className="text-xs text-surface-400 mb-5">If a dose is missed for 5+ minutes, we'll notify your caregiver automatically via Email and SMS.</p>
+                            <p className="text-xs text-surface-400 mb-5">If a dose is missed for 5+ minutes, we'll notify your caregiver automatically via Email and WhatsApp.</p>
                             <div className="space-y-4">
                                 <div>
                                     <label className="text-label block mb-1">Caregiver Name</label>
@@ -198,7 +199,7 @@ export const SetupWizard: React.FC<Props> = ({
                                         className="w-full bg-navy-900/60 border border-navy-600/30 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-teal-500/50" placeholder="caregiver@example.com" />
                                 </div>
                                 <div>
-                                    <label className="text-label block mb-1">Phone Number (for SMS)</label>
+                                    <label className="text-label block mb-1">Phone Number (for WhatsApp)</label>
                                     <input type="tel" value={caregiver.phone} onChange={e => setCaregiver({ ...caregiver, phone: e.target.value })}
                                         className="w-full bg-navy-900/60 border border-navy-600/30 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-teal-500/50" placeholder="+919876543210" />
                                     <p className="text-xs text-surface-500 mt-1">Include country code (e.g., +91 for India)</p>
@@ -209,8 +210,8 @@ export const SetupWizard: React.FC<Props> = ({
                                         <span className="text-sm text-surface-300">Email alerts</span>
                                     </label>
                                     <label className="flex items-center gap-2 cursor-pointer">
-                                        <input type="checkbox" checked={caregiver.notifySms} onChange={e => setCaregiver({ ...caregiver, notifySms: e.target.checked })} className="accent-teal-500" />
-                                        <span className="text-sm text-surface-300">SMS alerts</span>
+                                        <input type="checkbox" checked={caregiver.notifyWhatsapp} onChange={e => setCaregiver({ ...caregiver, notifyWhatsapp: e.target.checked })} className="accent-teal-500" />
+                                        <span className="text-sm text-surface-300">WhatsApp alerts</span>
                                     </label>
                                 </div>
                             </div>
@@ -218,22 +219,36 @@ export const SetupWizard: React.FC<Props> = ({
                     )}
 
                     {/* Navigation */}
-                    <div className="flex justify-between mt-6 pt-4 border-t border-navy-700/30">
-                        <button onClick={() => setStep(STEPS[stepIdx - 1])} disabled={stepIdx === 0}
-                            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-navy-800/50 border border-navy-600/25 text-surface-300 text-sm font-bold disabled:opacity-30 hover:border-navy-500/40 transition-all">
-                            <ChevronLeft className="w-4 h-4" /> Back
-                        </button>
-                        {stepIdx < STEPS.length - 1 ? (
-                            <button onClick={() => setStep(STEPS[stepIdx + 1])}
-                                className="flex items-center gap-2 px-5 py-2 rounded-xl bg-teal-500 text-navy-950 font-bold text-sm hover:bg-teal-400 transition-all">
-                                Next <ChevronRight className="w-4 h-4" />
-                            </button>
-                        ) : (
-                            <button onClick={onFinish}
-                                className="flex items-center gap-2 px-5 py-2 rounded-xl bg-teal-500 text-navy-950 font-bold text-sm hover:bg-teal-400 transition-all">
-                                <Play className="w-4 h-4" /> Start My Cycle
-                            </button>
+                    <div className="flex flex-col gap-3 mt-6 pt-4 border-t border-navy-700/30">
+                        {step === 'schedule' && activeMeds.length > 0 && !activeMeds.every(m => schedules.some(s => s.medicineId === m.id)) && (
+                            <p className="text-[10px] text-amber-500 font-bold uppercase text-center animate-pulse">
+                                ⚠️ Please add at least one dose time for each enabled medicine
+                            </p>
                         )}
+                        <div className="flex justify-between">
+                            <button onClick={() => setStep(STEPS[stepIdx - 1])} disabled={stepIdx === 0}
+                                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-navy-800/50 border border-navy-600/25 text-surface-300 text-sm font-bold disabled:opacity-30 hover:border-navy-500/40 transition-all">
+                                <ChevronLeft className="w-4 h-4" /> Back
+                            </button>
+                            
+                            {stepIdx < STEPS.length - 1 ? (
+                                <button 
+                                    onClick={() => setStep(STEPS[stepIdx + 1])}
+                                    disabled={
+                                        (step === 'slots' && activeMeds.length === 0) ||
+                                        (step === 'schedule' && (activeMeds.length === 0 || !activeMeds.every(m => schedules.some(s => s.medicineId === m.id))))
+                                    }
+                                    className="flex items-center gap-2 px-5 py-2 rounded-xl bg-teal-500 text-navy-950 font-bold text-sm hover:bg-teal-400 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                                >
+                                    Next <ChevronRight className="w-4 h-4" />
+                                </button>
+                            ) : (
+                                <button onClick={onFinish}
+                                    className="flex items-center gap-2 px-5 py-2 rounded-xl bg-teal-500 text-navy-950 font-bold text-sm hover:bg-teal-400 transition-all">
+                                    <Play className="w-4 h-4" /> Start My Cycle
+                                </button>
+                            )}
+                        </div>
                     </div>
                 </div>
             </div>

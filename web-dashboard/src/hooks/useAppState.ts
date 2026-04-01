@@ -52,7 +52,7 @@ export function useAppState(connected: boolean, lastMessage: string | null, publ
     const [schedules,   setSchedules]   = useState<Schedule[]>([]);
     const [logs,        setLogs]        = useState<DispenseLog[]>([]);
     const [caregiver,   setCaregiver]   = useState<CaregiverContact>({
-        id: generateId(), name: '', email: '', phone: '', notifyEmail: true, notifySms: true,
+        id: generateId(), name: '', email: '', phone: '', notifyEmail: true, notifyWhatsapp: true,
     });
     const [status, setStatus]           = useState<MachineStatus>(INITIAL_STATUS);
     const [safetyLocked, setSafetyLocked] = useState(true);
@@ -64,7 +64,7 @@ export function useAppState(connected: boolean, lastMessage: string | null, publ
     });
     const [syncing, setSyncing]         = useState(false);
 
-    const sendNotification = useCallback((medName: string, slot: number, notificationType: 'dispensing' | 'taken' | 'missed') => {
+    const sendNotification = useCallback((medName: string, slot: number, notificationType: 'dispensing' | 'taken' | 'missed', scheduledAt?: string) => {
         if (!caregiver.email && !caregiver.phone) return;
         const SUPABASE_URL   = import.meta.env.VITE_SUPABASE_URL ?? '';
         const SUPABASE_ANON  = import.meta.env.VITE_SUPABASE_ANON_KEY ?? '';
@@ -77,12 +77,12 @@ export function useAppState(connected: boolean, lastMessage: string | null, publ
             body: JSON.stringify({
                 medicineName: medName,
                 slotIndex: slot,
-                scheduledAt: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+                scheduledAt: scheduledAt || new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
                 caregiverName: caregiver.name || 'Caregiver',
                 caregiverEmail: caregiver.email,
                 caregiverPhone: caregiver.phone,
                 notifyEmail: caregiver.notifyEmail,
-                notifyWhatsapp: caregiver.notifySms,
+                notifyWhatsapp: caregiver.notifyWhatsapp,
                 notificationType: notificationType,
             }),
         }).catch(console.error);
@@ -96,14 +96,14 @@ export function useAppState(connected: boolean, lastMessage: string | null, publ
                 // 1. Medicines
                 const { data: meds } = await supabase.from('medicines').select('*').order('slot_index', { ascending: true });
                 if (meds && meds.length > 0) {
-                    setMedicines(meds.map(m => ({
+                    setMedicines(meds.slice(0, 4).map(m => ({
                         id: m.id, slotIndex: m.slot_index, name: m.name, colorLabel: m.color_label,
                         pillsTotal: m.pills_total, pillsRemaining: m.pills_remaining,
                         pillsPerDose: m.pills_per_dose, enabled: m.enabled
                     })));
                 } else {
-                    // Seed if empty
-                    await supabase.from('medicines').upsert(EMPTY_MEDICINES.map(m => ({
+                    // Seed if empty (exactly 4 slots)
+                    await supabase.from('medicines').upsert(EMPTY_MEDICINES.slice(0, 4).map(m => ({
                         id: m.id, slot_index: m.slotIndex, name: m.name, color_label: m.colorLabel,
                         pills_total: m.pillsTotal, pills_remaining: m.pillsRemaining,
                         pills_per_dose: m.pillsPerDose, enabled: m.enabled
@@ -124,7 +124,7 @@ export function useAppState(connected: boolean, lastMessage: string | null, publ
                 if (contact) {
                     setCaregiver({
                         id: contact.id, name: contact.name, email: contact.email, phone: contact.phone,
-                        notifyEmail: contact.notify_email, notifySms: contact.notify_sms
+                        notifyEmail: contact.notify_email, notifyWhatsapp: contact.notify_whatsapp
                     });
                 }
                 
@@ -169,7 +169,7 @@ export function useAppState(connected: boolean, lastMessage: string | null, publ
                 if (caregiver.name) {
                     await supabase.from('caregiver_contacts').upsert({
                         id: caregiver.id, name: caregiver.name, email: caregiver.email, phone: caregiver.phone,
-                        notify_email: caregiver.notifyEmail, notify_sms: caregiver.notifySms
+                        notify_email: caregiver.notifyEmail, notify_whatsapp: caregiver.notifyWhatsapp
                     });
                 }
                 setSyncing(false);
@@ -292,22 +292,36 @@ export function useAppState(connected: boolean, lastMessage: string | null, publ
 
             const enabled = schedules.filter(s => s.enabled).sort((a, b) => a.doseTime.localeCompare(b.doseTime));
             
+            const dayCount = Math.floor(Date.now() / 86400000);
+            const dayOfWeek = now.getDay() || 7; // Sunday=7
+
+            const dueToday = enabled.filter(s => {
+                if (s.frequency === 'every_other_day' && dayCount % 2 !== 0) return false;
+                if (s.frequency === 'weekly' && !s.daysOfWeek.includes(dayOfWeek)) return false;
+                return true;
+            });
+
             // 1. Sync next dose to LCD
-            const availableToday = enabled.filter(s => dispatched[`${s.id}-${today}`] !== today);
+            const availableToday = dueToday.filter(s => dispatched[`${s.id}-${today}`] !== today);
             const nextTime = availableToday.find(s => s.doseTime >= hhMM)?.doseTime ?? availableToday[0]?.doseTime ?? '--:--';
             publish(`next_dose:${nextTime}`);
 
             // 2. Dispatch due doses
             schedules.forEach(s => {
                 if (!s.enabled || s.doseTime !== hhMM) return;
+                
+                // Frequency check
+                if (s.frequency === 'every_other_day' && dayCount % 2 !== 0) return;
+                if (s.frequency === 'weekly' && !s.daysOfWeek.includes(dayOfWeek)) return;
+
                 const key = `${s.id}-${today}`;
                 if (dispatched[key] === today) return;
                 const med = medicines.find(m => m.id === s.medicineId && m.enabled && m.pillsRemaining > 0);
                 if (!med) return;
                 
-                console.log(`[SCHEDULER] Triggering dispense for ${med.name} at ${hhMM}`);
+                console.log(`[SCHEDULER] Triggering dispense for ${med.name} at ${hhMM} (Freq: ${s.frequency})`);
                 setDispatched(prev => ({ ...prev, [key]: today }));
-                sendNotification(med.name, med.slotIndex, 'dispensing');
+                sendNotification(med.name, med.slotIndex, 'dispensing', hhMM);
                 publish(`dispense:${med.slotIndex}`);
             });
         }, 10000); // Check every 10s
@@ -332,7 +346,7 @@ export function useAppState(connected: boolean, lastMessage: string | null, publ
         
         // Mark as taken so next eject picks the next one
         setDispatched(prev => ({ ...prev, [`${next.id}-${today}`]: today }));
-        sendNotification(med.name, med.slotIndex, 'dispensing');
+        sendNotification(med.name, med.slotIndex, 'dispensing', next.doseTime);
         publish(`dispense:${med.slotIndex}`);
         
         // Push updated next dose immediately
@@ -352,5 +366,6 @@ export function useAppState(connected: boolean, lastMessage: string | null, publ
         wizardDone, setWizardDone,
         syncing,
         quickEject,
+        sendNotification,
     };
 }

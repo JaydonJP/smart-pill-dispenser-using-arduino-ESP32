@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pill, Radio, Heart, Cloud, Loader2 } from 'lucide-react';
+import { Pill, Radio, Heart, Cloud, Loader2, FileOutput } from 'lucide-react';
 import { useMqtt, useAppState } from './hooks/useAppState';
 import { SetupWizard } from './components/SetupWizard';
 import { StatusPanel } from './components/StatusPanel';
@@ -8,6 +8,7 @@ import { InventoryPanel } from './components/InventoryPanel';
 import { CompliancePanel } from './components/CompliancePanel';
 import { LcdMirror } from './components/LcdMirror';
 import { PrescriptionUpload } from './components/PrescriptionUpload';
+import { downloadReport } from './utils/reports';
 
 const App: React.FC = () => {
     const mqtt = useMqtt();
@@ -84,9 +85,18 @@ const App: React.FC = () => {
                             )}
 
                             {/* Demo Mode Button */}
-                            <button onClick={mqtt.startDemo}
-                                className="px-3 py-1.5 rounded-lg bg-indigo-500/20 border border-indigo-500/40 text-indigo-400 text-xs font-bold hover:bg-indigo-500/30 transition-all">
+                            <button onClick={() => {
+                                state.sendNotification('Demo Medicine', 1, 'dispensing', 'Just Now');
+                                mqtt.startDemo();
+                            }}
+                                className="px-3 py-1.5 rounded-lg bg-indigo-500/20 border border-indigo-500/40 text-indigo-400 text-[10px] font-bold hover:bg-indigo-500/30 transition-all uppercase">
                                 🚀 DEMO MODE
+                            </button>
+
+                            {/* Download Report Button */}
+                            <button onClick={() => downloadReport(state.medicines, state.schedules, state.logs)}
+                                className="px-3 py-1.5 rounded-lg bg-surface-800/50 border border-navy-600/30 text-surface-300 text-[10px] font-bold hover:border-teal-500/50 hover:text-teal-400 transition-all flex items-center gap-2 uppercase">
+                                <FileOutput className="w-3.5 h-3.5" /> Report
                             </button>
 
                             {/* Supabase Sync Indicator */}
@@ -169,7 +179,7 @@ const App: React.FC = () => {
                         <span>© 2026 <strong className="text-surface-400">MediSync</strong> — ESP32-S3 Smart Pill Dispenser</span>
                     </div>
                     <div className="flex items-center gap-4 text-[10px] text-surface-600 tracking-wider font-mono">
-                        <span>7 Slots</span>
+                        <span>4 Slots</span>
                         <span className="w-1 h-1 rounded-full bg-surface-700" />
                         <span>SG90 Servo</span>
                         <span className="w-1 h-1 rounded-full bg-surface-700" />

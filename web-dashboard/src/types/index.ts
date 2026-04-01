@@ -17,7 +17,7 @@ export interface Schedule {
     id: string;
     medicineId: string;
     doseTime: string;        // HH:MM format
-    frequency: 'daily' | 'twice_daily' | 'weekly' | 'custom';
+    frequency: 'daily' | 'twice_daily' | 'weekly' | 'every_other_day' | 'custom';
     daysOfWeek: number[];    // 1=Mon ... 7=Sun
     enabled: boolean;
 }
@@ -39,7 +39,7 @@ export interface CaregiverContact {
     email: string;
     phone: string;           // E.164 e.g. +919876543210
     notifyEmail: boolean;
-    notifySms: boolean;
+    notifyWhatsapp: boolean;
 }
 
 export interface MachineStatus {
